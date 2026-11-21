@@ -3,31 +3,31 @@
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1565C0"
-    android:gravity="center_vertical"
+    android:background="#F5FFFFFF"
+    android:gravity="center"
     android:orientation="horizontal"
-    android:padding="12dp">
+    android:padding="8dp">
 
-    <TextView
-        android:id="@+id/widget_title"
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:text="Abfahrten Next&amp;Here&#10;Ziel sprechen..."
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+    <ImageView
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:contentDescription="Pfeil links"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_arrow_left" />
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:background="#FFFFFF"
-        android:paddingLeft="10dp"
-        android:paddingTop="6dp"
-        android:paddingRight="10dp"
-        android:paddingBottom="6dp"
-        android:text="MIC"
-        android:textColor="#1565C0"
-        android:textSize="12sp"
-        android:textStyle="bold" />
+    <ImageView
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        android:layout_marginLeft="12dp"
+        android:layout_marginRight="12dp"
+        android:contentDescription="Mikrofon starten"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_mic_center" />
+
+    <ImageView
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:contentDescription="Pfeil rechts"
+        android:scaleType="fitCenter"
+        android:src="@drawable/widget_arrow_right" />
 </LinearLayout>
