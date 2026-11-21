@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.location.Location
 import android.os.Bundle
+import android.provider.AlarmClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -967,6 +968,55 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                             text = if (isSpeaking) "⏹ Vorlesen stoppen" else "🔊 Vorlesen",
                             fontWeight = FontWeight.Bold
                         )
+                    }
+
+                    // WECKER-NACHFRAGE (sobald die Abfahrt mindestens 12 Minuten in der Zukunft liegt)
+                    val minsUntilDep = ((activeConn.departureMillis - System.currentTimeMillis()) / 60_000L).toInt()
+                    if (minsUntilDep >= 12) {
+                        val defaultLeadMins = when {
+                            minsUntilDep >= 45 -> 20
+                            minsUntilDep >= 25 -> 15
+                            else -> 10
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "⏰ Soll ich dir den Wecker auf $defaultLeadMins Minuten vorher zur Erinnerung stellen?",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(10, 15, 20, 30).filter { it <= minsUntilDep - 2 }.take(3).forEach { mins ->
+                                    OutlinedButton(
+                                        onClick = {
+                                            statusMessage = setDepartureAlarm(
+                                                context = context,
+                                                departureMillis = activeConn.departureMillis,
+                                                minutesBefore = mins,
+                                                label = "Abfahrt ${activeConn.firstLine} (${activeConn.firstDepartureTime} Uhr)"
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(text = "$mins Min. vorher", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
