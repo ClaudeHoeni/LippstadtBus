@@ -45,6 +45,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -60,7 +61,9 @@ data class ParsedVoiceQuery(
     val preferredMode: String?,
     val modeDisplayName: String?,
     val poiCategory: PoiCategory?,
-    val poiAnchorPlace: String?
+    val poiAnchorPlace: String?,
+    val targetTimeMillis: Long? = null,
+    val timeDisplayLabel: String? = null
 )
 
 data class GeoCandidate(
@@ -169,8 +172,138 @@ private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
     return null
 }
 
+private fun extractFutureDateTime(rawText: String): Pair<String, Pair<Long, String>?> {
+    var working = rawText
+    val cal = Calendar.getInstance(Locale.GERMANY)
+    val nowMillis = cal.timeInMillis
+    var hasCustomDate = false
+    var hasCustomTime = false
+
+    // 1. Relative Zeit: "in 2 Stunden", "in 30 Minuten"
+    val inRelMatch = Regex("\\bin\\s+(\\d+)\\s*(stunde|stunden|std|minute|minuten|min)\\b", RegexOption.IGNORE_CASE).find(working)
+    if (inRelMatch != null) {
+        val amount = inRelMatch.groupValues[1].toIntOrNull() ?: 0
+        val unit = inRelMatch.groupValues[2].lowercase(Locale.GERMANY)
+        if (unit.startsWith("std") || unit.startsWith("stunde")) {
+            cal.add(Calendar.HOUR_OF_DAY, amount)
+        } else {
+            cal.add(Calendar.MINUTE, amount)
+        }
+        working = working.replace(inRelMatch.value, " ")
+        val fmt = SimpleDateFormat("EEE, dd.MM. 'um' HH:mm 'Uhr'", Locale.GERMANY)
+        return working.trim() to (cal.timeInMillis to fmt.format(cal.time))
+    }
+
+    // 2. Wochentage ("Montag", "am Dienstag", "nächsten Freitag")
+    val weekdays = mapOf(
+        "montag" to Calendar.MONDAY,
+        "dienstag" to Calendar.TUESDAY,
+        "mittwoch" to Calendar.WEDNESDAY,
+        "donnerstag" to Calendar.THURSDAY,
+        "freitag" to Calendar.FRIDAY,
+        "samstag" to Calendar.SATURDAY,
+        "sonnabend" to Calendar.SATURDAY,
+        "sonntag" to Calendar.SUNDAY
+    )
+    val dayRegex = Regex("\\b(?:am\\s+|nächsten\\s+|naechsten\\s+|kommenden\\s+)?(montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonnabend|sonntag)\\b", RegexOption.IGNORE_CASE)
+    val dayMatch = dayRegex.find(working)
+    if (dayMatch != null) {
+        val targetDow = weekdays[dayMatch.groupValues[1].lowercase(Locale.GERMANY)]
+        if (targetDow != null) {
+            val currentDow = cal.get(Calendar.DAY_OF_WEEK)
+            var daysDiff = (targetDow - currentDow + 7) % 7
+            if (daysDiff == 0) daysDiff = 7 // Nächster gleichnamiger Wochentag
+            cal.add(Calendar.DAY_OF_YEAR, daysDiff)
+            hasCustomDate = true
+            working = working.replace(dayMatch.value, " ")
+        }
+    }
+
+    // 3. "übermorgen" / "morgen" / "heute"
+    val relDayRegex = Regex("\\b(übermorgen|uebermorgen|morgen|heute)\\b", RegexOption.IGNORE_CASE)
+    val relDayMatch = relDayRegex.find(working)
+    if (relDayMatch != null) {
+        when (relDayMatch.groupValues[1].lowercase(Locale.GERMANY)) {
+            "übermorgen", "uebermorgen" -> {
+                cal.add(Calendar.DAY_OF_YEAR, 2)
+                hasCustomDate = true
+            }
+            "morgen" -> {
+                cal.add(Calendar.DAY_OF_YEAR, 1)
+                hasCustomDate = true
+            }
+            "heute" -> {
+                hasCustomDate = true
+            }
+        }
+        working = working.replace(relDayMatch.value, " ")
+    }
+
+    // 4. Konkretes Datum ("am 25.11." oder "25.11.2026")
+    val dateRegex = Regex("\\b(?:am\\s+)?(\\d{1,2})\\.(\\d{1,2})\\.(?:(\\d{2,4}))?\\b")
+    val dateMatch = dateRegex.find(working)
+    if (dateMatch != null) {
+        val d = dateMatch.groupValues[1].toIntOrNull()
+        val m = dateMatch.groupValues[2].toIntOrNull()
+        val yRaw = dateMatch.groupValues[3]
+        if (d != null && m != null && d in 1..31 && m in 1..12) {
+            cal.set(Calendar.MONTH, m - 1)
+            cal.set(Calendar.DAY_OF_MONTH, d)
+            if (yRaw.isNotBlank()) {
+                val yInt = yRaw.toInt()
+                cal.set(Calendar.YEAR, if (yInt < 100) 2000 + yInt else yInt)
+            } else if (cal.timeInMillis < nowMillis - 12 * 3600 * 1000L) {
+                cal.add(Calendar.YEAR, 1)
+            }
+            hasCustomDate = true
+            working = working.replace(dateMatch.value, " ")
+        }
+    }
+
+    // 5. Uhrzeit ("um 9 Uhr", "um 14:30 Uhr", "ab 8:15", "9 Uhr 30")
+    val timeRegex = Regex("\\b(?:um|ab|gegen)\\s+(\\d{1,2})(?::(\\d{2}))?\\s*(?:uhr(?:\\s*(\\d{1,2}))?)?\\b|\\b(\\d{1,2}):(\\d{2})\\s*(?:uhr)?\\b|\\b(\\d{1,2})\\s*uhr(?:\\s*(\\d{1,2}))?\\b", RegexOption.IGNORE_CASE)
+    val timeMatch = timeRegex.find(working)
+    if (timeMatch != null) {
+        val hourStr = listOf(timeMatch.groupValues[1], timeMatch.groupValues[4], timeMatch.groupValues[6]).firstOrNull { it.isNotBlank() }
+        val minStr = listOf(timeMatch.groupValues[2], timeMatch.groupValues[3], timeMatch.groupValues[5], timeMatch.groupValues[7]).firstOrNull { it.isNotBlank() }
+        val hour = hourStr?.toIntOrNull()
+        val minute = minStr?.toIntOrNull() ?: 0
+        if (hour != null && hour in 0..23 && minute in 0..59) {
+            cal.set(Calendar.HOUR_OF_DAY, hour)
+            cal.set(Calendar.MINUTE, minute)
+            cal.set(Calendar.SECOND, 0)
+            hasCustomTime = true
+            working = working.replace(timeMatch.value, " ")
+        }
+    }
+
+    if (!hasCustomDate && !hasCustomTime) {
+        return rawText to null
+    }
+
+    // Falls nur ein Wochentag/Datum ohne Uhrzeit genannt wurde -> Standard 08:00 Uhr setzen
+    if (hasCustomDate && !hasCustomTime) {
+        cal.set(Calendar.HOUR_OF_DAY, 8)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
+    }
+
+    // Falls nur eine Uhrzeit heute genannt wurde, die schon vorbei ist -> auf morgen schieben
+    if (!hasCustomDate && hasCustomTime && cal.timeInMillis < nowMillis - 5 * 60 * 1000L) {
+        cal.add(Calendar.DAY_OF_YEAR, 1)
+    }
+
+    val cleanedText = working.replace(Regex("\\s{2,}"), " ").trim()
+    val labelFmt = SimpleDateFormat("EEEE, dd.MM. 'ab' HH:mm 'Uhr'", Locale.GERMANY)
+    return cleanedText to (cal.timeInMillis to labelFmt.format(cal.time))
+}
+
 fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
-    val text = rawInput.trim().trimEnd('?', '!', '.')
+    val (textWithoutTime, parsedTimeInfo) = extractFutureDateTime(rawInput.trim().trimEnd('?', '!', '.'))
+    val targetMillis = parsedTimeInfo?.first
+    val timeLabel = parsedTimeInfo?.second
+
+    val text = textWithoutTime.trim()
     val lower = text.lowercase(Locale.GERMANY)
 
     val (modeCode, modeLabel) = when {
@@ -200,26 +333,29 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
             preferredMode = modeCode,
             modeDisplayName = modeLabel,
             poiCategory = category,
-            poiAnchorPlace = anchorPlace?.ifBlank { null }
+            poiAnchorPlace = anchorPlace?.ifBlank { null },
+            targetTimeMillis = targetMillis,
+            timeDisplayLabel = timeLabel
         )
     }
 
     val fromToRegex = Regex(
-        "(?:von|ab)\\s+(.+?)\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
+        "(?:von|ab)\\s+.+?\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
         RegexOption.IGNORE_CASE
     )
     val fromToMatch = fromToRegex.find(text)
     if (fromToMatch != null) {
-        val rawOrigin = cleanPlaceArticle(fromToMatch.groupValues[1])
-        val rawDest = cleanPlaceArticle(fromToMatch.groupValues[2])
-        if (rawOrigin.isNotBlank() && rawDest.isNotBlank()) {
+        val rawDest = cleanPlaceArticle(fromToMatch.groupValues[1])
+        if (rawDest.isNotBlank()) {
             return ParsedVoiceQuery(
-                origin = rawOrigin,
+                origin = null,
                 destination = rawDest,
                 preferredMode = modeCode,
                 modeDisplayName = modeLabel,
                 poiCategory = null,
-                poiAnchorPlace = null
+                poiAnchorPlace = null,
+                targetTimeMillis = targetMillis,
+                timeDisplayLabel = timeLabel
             )
         }
     }
@@ -234,7 +370,7 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
     } else {
         text.replace(
             Regex(
-                "^(wie\\s+komme\\s+ich\\s+|wann\\s+fährt\\s+|wann\\s+faehrt\\s+|nächster\\s+|naechster\\s+|nächste\\s+|naechste\\s+|mit\\s+dem\\s+|mit\\s+der\\s+|bus\\s+|u-bahn\\s+|ubahn\\s+|s-bahn\\s+|sbahn\\s+)+",
+                "^(wie\\s+komme\\s+ich\\s+|wann\\s+fährt\\s+|wann\\s+faehrt\\s+|fährt\\s+ein\\s+|faehrt\\s+ein\\s+|nächster\\s+|naechster\\s+|nächste\\s+|naechste\\s+|mit\\s+dem\\s+|mit\\s+der\\s+|bus\\s+|u-bahn\\s+|ubahn\\s+|s-bahn\\s+|sbahn\\s+|ein\\s+)+",
                 RegexOption.IGNORE_CASE
             ),
             ""
@@ -252,7 +388,9 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         preferredMode = modeCode,
         modeDisplayName = modeLabel,
         poiCategory = null,
-        poiAnchorPlace = null
+        poiAnchorPlace = null,
+        targetTimeMillis = targetMillis,
+        timeDisplayLabel = timeLabel
     )
 }
 
@@ -346,6 +484,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     var activeStartCoords by remember { mutableStateOf<Pair<Double, Double>?>(null) }
     var activePreferredMode by remember { mutableStateOf<String?>(null) }
     var activeModeDisplay by remember { mutableStateOf<String?>(null) }
+    var activeTargetTimeMillis by remember { mutableStateOf<Long?>(null) }
+    var activeTimeLabel by remember { mutableStateOf<String?>(null) }
 
     var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var isUpdating by remember { mutableStateOf(false) }
@@ -420,25 +560,30 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         startLon: Double,
         dest: GeoCandidate,
         preferredMode: String?,
-        modeDisplay: String?
+        modeDisplay: String?,
+        targetTimeMillis: Long? = activeTargetTimeMillis,
+        timeLabel: String? = activeTimeLabel
     ) {
         val modeHint = if (modeDisplay != null) " ($modeDisplay)" else ""
-        statusMessage = "Suche$modeHint → ${dest.name}..."
+        val timeHint = if (timeLabel != null) " · $timeLabel" else ""
+        statusMessage = "Suche$modeHint → ${dest.name}$timeHint..."
         val results = fetchConnectionsForCoords(
             startLat = startLat,
             startLon = startLon,
             destLat = dest.lat,
             destLon = dest.lon,
             destName = dest.name,
-            preferredMode = preferredMode
+            preferredMode = preferredMode,
+            customDepartureMillis = targetTimeMillis
         )
         connections = results
         selectedConnectionIndex = 0
+        expandedLegIndex = null
         alternativesDropdownExpanded = false
         statusMessage = if (results.isEmpty()) {
-            "Keine Verbindung$modeHint nach ${dest.name} gefunden."
+            "Keine Verbindung$modeHint nach ${dest.name}$timeHint gefunden."
         } else {
-            "Ziel: ${dest.fullDisplay}"
+            "Ziel: ${dest.fullDisplay}$timeHint"
         }
     }
 
@@ -472,6 +617,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             placesDropdownExpanded = false
             activePreferredMode = parsed.preferredMode
             activeModeDisplay = parsed.modeDisplayName
+            activeTargetTimeMillis = parsed.targetTimeMillis
+            activeTimeLabel = parsed.timeDisplayLabel
 
             try {
                 statusMessage = "Ermittle aktuellen GPS-Standort..."
@@ -1203,7 +1350,8 @@ suspend fun fetchConnectionsForCoords(
     destLat: Double,
     destLon: Double,
     destName: String,
-    preferredMode: String? = null
+    preferredMode: String? = null,
+    customDepartureMillis: Long? = null
 ): List<TransitConnection> = withContext(Dispatchers.IO) {
     val modesParam = when (preferredMode) {
         "BUS" -> "&transitModes=BUS"
@@ -1214,10 +1362,11 @@ suspend fun fetchConnectionsForCoords(
         else -> ""
     }
 
+    val referenceMillis = customDepartureMillis ?: System.currentTimeMillis()
     val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
     }
-    val nowIsoEncoded = URLEncoder.encode(isoFmt.format(Date()), "UTF-8")
+    val nowIsoEncoded = URLEncoder.encode(isoFmt.format(Date(referenceMillis)), "UTF-8")
 
     val planUrl = "https://api.transitous.org/api/v1/plan" +
             "?fromPlace=$startLat,$startLon" +
@@ -1231,8 +1380,8 @@ suspend fun fetchConnectionsForCoords(
     val root = JSONObject(httpGet(planUrl))
     val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
     val resultList = mutableListOf<TransitConnection>()
-    val nowMillis = System.currentTimeMillis()
-    val minAllowedDeparture = nowMillis - 60 * 1000L
+    val nowMillis = referenceMillis
+    val minAllowedDeparture = referenceMillis - 60 * 1000L
 
     for (i in 0 until itineraries.length()) {
         val itinerary = itineraries.getJSONObject(i)
