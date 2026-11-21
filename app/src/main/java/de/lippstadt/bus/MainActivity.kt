@@ -476,6 +476,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
     var selectedConnectionIndex by remember { mutableStateOf(0) }
+    var expandedLegIndex by remember { mutableStateOf<Int?>(null) }
     var alternativesDropdownExpanded by remember { mutableStateOf(false) }
 
     // Alternative Orte/Haltestellen (als sauberes Dropdown statt Popup-Dialog!)
