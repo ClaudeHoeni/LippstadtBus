@@ -13,9 +13,9 @@
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:text="Oeffi Finder&#10;Ziel sprechen..."
+        android:text="Abfahrten Next&amp;Here&#10;Ziel sprechen..."
         android:textColor="#FFFFFF"
-        android:textSize="14sp"
+        android:textSize="13sp"
         android:textStyle="bold" />
 
     <TextView

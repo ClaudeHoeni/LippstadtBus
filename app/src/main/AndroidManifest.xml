@@ -14,7 +14,8 @@
 
     <application
         android:allowBackup="true"
-        android:label="Oeffi Finder"
+        
+        android:label="Abfahrten Next&amp;Here"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
@@ -31,7 +32,7 @@
         <receiver
             android:name=".BusWidgetProvider"
             android:exported="true"
-            android:label="Oeffi Sprache">
+            android:label="Next&amp;Here Sprache">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
