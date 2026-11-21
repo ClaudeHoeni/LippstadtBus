@@ -15,16 +15,28 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+      - name: Ensure Fixed Keystore Exists
+        run: |
+          if [ ! -f app/oeffi-release.jks ]; then
+            keytool -genkeypair -v -keystore app/oeffi-release.jks -alias oeffi -keyalg RSA -keysize 2048 -validity 10000 -storepass oeffi1234 -keypass oeffi1234 -dname "CN=OeffiFinder, OU=Private, O=Private, L=Berlin, S=Berlin, C=DE"
+          fi
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Build Debug APK
+      - name: Build Signed Debug APK
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: gradle assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: OeffiFinder-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Publish Auto-Update Release
+      - name: Delete old v-latest release if exists
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete v-latest --yes --cleanup-tag
+      - name: Publish Fresh Auto-Update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v-latest
