@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         const val TEST_LIPPSTADT_LON = 8.3446
     }
 
-    private var voiceTriggerCounter by mutableIntStateOf(0)
+    private var voiceTriggerCounter by mutableStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -456,3 +456,4 @@ private fun httpGet(urlString: String): String {
     conn.readTimeout = 10000
     return conn.inputStream.bufferedReader().use { it.readText() }
 }
+
