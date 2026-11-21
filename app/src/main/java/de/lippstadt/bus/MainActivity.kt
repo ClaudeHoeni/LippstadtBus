@@ -74,6 +74,8 @@ data class TransitConnection(
     val firstDirection: String,
     val firstDepartureTime: String,
     val finalArrivalTime: String,
+    val departureMillis: Long,
+    val arrivalMillis: Long,
     val firstDelayMinutes: Int,
     val totalDurationMinutes: Int,
     val transfersCount: Int,
@@ -129,7 +131,7 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         Regex("\\b(u-bahn|ubahn|u bahn)\\b").containsMatchIn(lower) -> "SUBWAY" to "U-Bahn"
         Regex("\\b(s-bahn|sbahn|s bahn)\\b").containsMatchIn(lower) -> "SUBURBAN" to "S-Bahn"
         Regex("\\b(tram|straßenbahn|strassenbahn)\\b").containsMatchIn(lower) -> "TRAM" to "Tram"
-        Regex("\\b(zug|bahn|regionalbahn|re|rb)\\b").containsMatchIn(lower) -> "RAIL" to "Bahn"
+        Regex("\\b(zug|bahn|regionalbahn|re|rb)\\b").containsMatchIn(lower) -> "REGIONAL_RAIL" to "Regionalbahn"
         Regex("\\b(bus|stadtbus|nachtbus)\\b").containsMatchIn(lower) -> "BUS" to "Bus"
         else -> null to null
     }
@@ -182,14 +184,35 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
     )
 }
 
-private fun formatLineForSpeech(rawLine: String): String {
-    return rawLine
-        .replace(Regex("^SUBWAY\\b", RegexOption.IGNORE_CASE), "U-Bahn")
-        .replace(Regex("^SUBURBAN\\b", RegexOption.IGNORE_CASE), "S-Bahn")
-        .replace(Regex("^BUS\\b", RegexOption.IGNORE_CASE), "Bus")
-        .replace(Regex("^TRAM\\b", RegexOption.IGNORE_CASE), "Straßenbahn")
-        .replace(Regex("^RAIL\\b", RegexOption.IGNORE_CASE), "Bahn")
-        .replace(Regex("^FERRY\\b", RegexOption.IGNORE_CASE), "Fähre")
+/**
+ * Übersetzt englische API-Verkehrsmittelnamen konsequent in sauberes Deutsch.
+ */
+fun formatGermanLineName(rawMode: String, routeShortName: String, routeLongName: String): String {
+    val shortClean = routeShortName.trim()
+    val germanType = when (rawMode.uppercase(Locale.US)) {
+        "BUS" -> "Bus"
+        "SUBWAY" -> "U-Bahn"
+        "SUBURBAN" -> "S-Bahn"
+        "TRAM" -> "Tram"
+        "REGIONAL_RAIL", "RAIL" -> "Zug"
+        "HIGHSPEED_RAIL", "LONG_DISTANCE" -> "Fernzug"
+        "FERRY" -> "Fähre"
+        else -> "ÖPNV"
+    }
+
+    if (shortClean.isBlank()) {
+        return routeLongName.ifBlank { germanType }
+    }
+
+    // Doppelungen vermeiden (z. B. wenn shortClean schon "U7", "S1", "RE 1" oder "Bus C1" enthält)
+    val upperShort = shortClean.uppercase(Locale.US)
+    return when {
+        germanType == "U-Bahn" && upperShort.startsWith("U") -> "U-Bahn $shortClean"
+        germanType == "S-Bahn" && upperShort.startsWith("S") -> "S-Bahn $shortClean"
+        upperShort.startsWith("BUS ") -> shortClean
+        upperShort.startsWith("RE") || upperShort.startsWith("RB") || upperShort.startsWith("IC") -> shortClean
+        else -> "$germanType $shortClean"
+    }
 }
 
 private fun formatTimeForSpeech(hhMm: String): String {
@@ -200,9 +223,6 @@ private fun formatTimeForSpeech(hhMm: String): String {
     return if (min == 0) "$hour Uhr" else "$hour Uhr $min"
 }
 
-/**
- * Erzeugt eine kompakte, gut verständliche Zusammenfassung zum Vorlesen.
- */
 fun buildSpokenSummary(conn: TransitConnection): String {
     val sb = StringBuilder()
     val delayNote = if (conn.firstDelayMinutes > 0) {
@@ -215,15 +235,15 @@ fun buildSpokenSummary(conn: TransitConnection): String {
     val firstTransit = transitLegs.firstOrNull()
     if (firstTransit != null) {
         sb.append("Abfahrt um ${formatTimeForSpeech(conn.firstDepartureTime)}$delayNote ")
-        sb.append("ab ${firstTransit.fromStop} mit ${formatLineForSpeech(firstTransit.lineName)} ")
-        sb.append("in Richtung ${firstTransit.direction}. ")
+        sb.append("ab ${firstTransit.fromStop} mit ${firstTransit.lineName} ")
+        sb.append("Richtung ${firstTransit.direction}. ")
     }
 
     for (leg in conn.legs) {
         if (leg.isTransfer) {
             sb.append("Umstieg an ${leg.fromStop}, ${leg.durationMinutes} Minuten Übergang. ")
         } else if (!leg.isWalk && leg != firstTransit) {
-            sb.append("Weiter um ${formatTimeForSpeech(leg.startTime)} mit ${formatLineForSpeech(leg.lineName)} ")
+            sb.append("Weiter um ${formatTimeForSpeech(leg.startTime)} mit ${leg.lineName} ")
             sb.append("Richtung ${leg.direction}. ")
         }
     }
@@ -249,12 +269,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
     var selectedConnectionIndex by remember { mutableStateOf(0) }
-    var nextHourDropdownExpanded by remember { mutableStateOf(false) }
+    var alternativesDropdownExpanded by remember { mutableStateOf(false) }
 
     var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var isUpdating by remember { mutableStateOf(false) }
 
-    // Text-to-Speech (Sprachausgabe) initialisieren
     var ttsReady by remember { mutableStateOf(false) }
     val tts = remember {
         var engine: TextToSpeech? = null
@@ -269,16 +288,10 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
     DisposableEffect(Unit) {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                isSpeaking = true
-            }
-            override fun onDone(utteranceId: String?) {
-                isSpeaking = false
-            }
+            override fun onStart(utteranceId: String?) { isSpeaking = true }
+            override fun onDone(utteranceId: String?) { isSpeaking = false }
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                isSpeaking = false
-            }
+            override fun onError(utteranceId: String?) { isSpeaking = false }
         })
         onDispose {
             tts?.stop()
@@ -350,13 +363,13 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             isLoading = true
             connections = emptyList()
             selectedConnectionIndex = 0
-            nextHourDropdownExpanded = false
+            alternativesDropdownExpanded = false
 
             try {
                 statusMessage = "Ermittle aktuellen GPS-Standort..."
                 val locData = detectCurrentLocation()
                 if (locData == null) {
-                    statusMessage = "GPS-Standort nicht verfügbar. Bitte Standortdienst & Berechtigung aktivieren."
+                    statusMessage = "GPS-Standort nicht verfügbar. Bitte Standortdienst aktivieren."
                     isLoading = false
                     return@launch
                 }
@@ -606,7 +619,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        // HAUPTBILDSCHIRM: AKTUELL BESTE VERBINDUNG + BUTTON "VORLESEN"
+        // HAUPTBILDSCHIRM: AKTUELL BESTE VERBINDUNG DIE JETZT ABFÄHRT
         val activeConn = connections.getOrNull(selectedConnectionIndex)
         if (activeConn != null) {
             Card(
@@ -648,7 +661,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // BUTTON: ZUSAMMENFASSUNG VORLESEN
                     FilledTonalButton(
                         onClick = { toggleSpeakConnection(activeConn) },
                         modifier = Modifier.fillMaxWidth()
@@ -670,13 +682,13 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(
-                                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f),
                                         shape = RoundedCornerShape(6.dp)
                                     )
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                val distNote = if (leg.distanceMeters > 0) ", ${leg.distanceMeters} m" else ""
+                                val distNote = if (leg.distanceMeters > 0) ", ${leg.distanceMeters} m Fußweg" else ""
                                 Text(
                                     text = "↻ Umstieg an ${leg.fromStop} (${leg.durationMinutes} Min. Übergang$distNote)",
                                     style = MaterialTheme.typography.bodySmall,
@@ -733,12 +745,12 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
-        // DROPDOWN-MENÜ FÜR WEITERE ABFAHRTEN DER NÄCHSTEN 1 STUNDE
+        // DROPDOWN-MENÜ: ALTERNATIVEN
         if (connections.size > 1) {
             Spacer(modifier = Modifier.height(12.dp))
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
-                    onClick = { nextHourDropdownExpanded = !nextHourDropdownExpanded },
+                    onClick = { alternativesDropdownExpanded = !alternativesDropdownExpanded },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(8.dp)
                 ) {
@@ -748,22 +760,23 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Abfahrten der nächsten 1 Std. (${connections.size})",
+                            text = "Alternativen (${connections.size - 1} weitere)",
                             fontWeight = FontWeight.SemiBold
                         )
-                        Text(text = if (nextHourDropdownExpanded) "▲" else "▼")
+                        Text(text = if (alternativesDropdownExpanded) "▲" else "▼")
                     }
                 }
 
                 DropdownMenu(
-                    expanded = nextHourDropdownExpanded,
-                    onDismissRequest = { nextHourDropdownExpanded = false },
+                    expanded = alternativesDropdownExpanded,
+                    onDismissRequest = { alternativesDropdownExpanded = false },
                     modifier = Modifier.fillMaxWidth(0.92f)
                 ) {
                     connections.forEachIndexed { index, conn ->
                         val isSelected = index == selectedConnectionIndex
                         val delayStr = if (conn.firstDelayMinutes > 0) " (+${conn.firstDelayMinutes}')" else ""
-                        val bestTag = if (index == 0) " · Beste" else ""
+                        val bestTag = if (index == 0) " · Beste Verbindung" else ""
+                        val transferTag = if (conn.transfersCount == 0) "Direkt" else "${conn.transfersCount}× Umstieg"
                         DropdownMenuItem(
                             text = {
                                 Column {
@@ -772,7 +785,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min.) · Ab ${conn.legs.firstOrNull { !it.isWalk && !it.isTransfer }?.fromStop ?: ""}",
+                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min., $transferTag) · Ab ${conn.legs.firstOrNull { !it.isWalk && !it.isTransfer }?.fromStop ?: ""}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -784,11 +797,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                     isSpeaking = false
                                 }
                                 selectedConnectionIndex = index
-                                nextHourDropdownExpanded = false
+                                alternativesDropdownExpanded = false
                                 statusMessage = if (index == 0) {
                                     "Beste Verbindung:"
                                 } else {
-                                    "Ausgewählte Verbindung (${conn.firstDepartureTime} Uhr):"
+                                    "Alternative (${conn.firstDepartureTime} Uhr):"
                                 }
                             }
                         )
@@ -883,16 +896,23 @@ suspend fun fetchConnections(
     val destLon = resolvedDest.second
     val destName = resolvedDest.third
 
-    val modeParam = if (preferredMode != null) "&transitModes=$preferredMode" else ""
+    // Fernzüge (ICE/IC) ausschließen, damit für Stadt-/Regionalziele der echte Nahverkehr gewählt wird
+    val modesParam = if (preferredMode != null) {
+        "&transitModes=$preferredMode"
+    } else {
+        "&transitModes=BUS,SUBWAY,SUBURBAN,TRAM,REGIONAL_RAIL,FERRY"
+    }
+
     val planUrl = "https://api.transitous.org/api/v1/plan" +
             "?fromPlace=$startLat,$startLon" +
             "&toPlace=$destLat,$destLon" +
-            "&numItineraries=12$modeParam"
+            "&numItineraries=12$modesParam"
 
     val root = JSONObject(httpGet(planUrl))
     val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
     val resultList = mutableListOf<TransitConnection>()
     val nowMillis = System.currentTimeMillis()
+    val minAllowedDeparture = nowMillis - 60 * 1000L // bereits abgefahrene Verbindungen ausfiltern
     val maxWindowMillis = nowMillis + 60 * 60 * 1000L
 
     for (i in 0 until itineraries.length()) {
@@ -908,6 +928,7 @@ suspend fun fetchConnections(
         var firstTransitLine = ""
         var firstTransitDir = ""
         var finalArrTime = ""
+        var finalArrMillis: Long? = null
 
         for (j in 0 until legsJson.length()) {
             val leg = legsJson.getJSONObject(j)
@@ -925,6 +946,7 @@ suspend fun fetchConnections(
             val formattedStart = formatIsoTime(startTimeStr)
             val formattedEnd = formatIsoTime(endTimeStr)
             finalArrTime = formattedEnd
+            finalArrMillis = parseIsoMillis(endTimeStr)
 
             if (isWalk) {
                 rawParsedLegs.add(
@@ -944,11 +966,8 @@ suspend fun fetchConnections(
                 )
             } else {
                 val routeShort = leg.optString("routeShortName", "")
-                val displayName = if (routeShort.isNotBlank()) {
-                    "$mode $routeShort"
-                } else {
-                    leg.optString("routeLongName", mode.ifBlank { "ÖPNV" })
-                }
+                val routeLong = leg.optString("routeLongName", "")
+                val displayName = formatGermanLineName(mode, routeShort, routeLong)
                 val headsign = leg.optString("headsign", destName)
                 val delayMins = calculateDelayMinutes(scheduledStartStr, startTimeStr)
 
@@ -981,6 +1000,12 @@ suspend fun fetchConnections(
 
         if (transitLineNames.isEmpty()) continue
 
+        // Verbindungen, die schon abgefahren sind, überspringen
+        if (firstTransitDepartureMillis != null && firstTransitDepartureMillis < minAllowedDeparture) {
+            continue
+        }
+
+        // Umstiege explizit zwischen allen ÖPNV-Abschnitten einbauen
         val finalLegs = mutableListOf<RouteLegInfo>()
         var seenFirstTransit = false
         for (idx in rawParsedLegs.indices) {
@@ -1035,6 +1060,9 @@ suspend fun fetchConnections(
             continue
         }
 
+        val depMs = firstTransitDepartureMillis ?: nowMillis
+        val arrMs = finalArrMillis ?: (depMs + totalDurSec * 1000L)
+
         resultList.add(
             TransitConnection(
                 summaryLines = transitLineNames.joinToString(" → "),
@@ -1042,6 +1070,8 @@ suspend fun fetchConnections(
                 firstDirection = firstTransitDir,
                 firstDepartureTime = firstTransitDepartureTime,
                 finalArrivalTime = finalArrTime,
+                departureMillis = depMs,
+                arrivalMillis = arrMs,
                 firstDelayMinutes = firstTransitDelay,
                 totalDurationMinutes = maxOf(1, totalDurSec / 60),
                 transfersCount = maxOf(0, transitLineNames.size - 1),
@@ -1049,7 +1079,9 @@ suspend fun fetchConnections(
             )
         )
     }
-    resultList
+
+    // Beste Verbindung = früheste Ankunft unter den aktuell abfahrenden Verbindungen, danach früheste Abfahrt
+    resultList.sortedWith(compareBy<TransitConnection> { it.arrivalMillis }.thenBy { it.departureMillis })
 }
 
 private fun computeMinutesDiff(hhMmStart: String, hhMmEnd: String): Int {
@@ -1096,7 +1128,7 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.5 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.6 (https://github.com/ClaudeHoeni/LippstadtBus)")
     conn.connectTimeout = 12000
     conn.readTimeout = 12000
     if (conn.responseCode !in 200..299) {
