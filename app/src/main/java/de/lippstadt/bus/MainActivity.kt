@@ -15,8 +15,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
@@ -52,7 +51,6 @@ data class BusConnection(
 class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_VOICE_SEARCH = "de.lippstadt.bus.ACTION_VOICE_SEARCH"
-        // Simulierte Koordinaten: Marktplatz / Rathaus 59555 Lippstadt
         const val TEST_LIPPSTADT_LAT = 51.6754
         const val TEST_LIPPSTADT_LON = 8.3446
     }
@@ -81,7 +79,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BusFinderScreen(externalVoiceTrigger: Int) {
     val context = LocalContext.current
@@ -286,17 +283,14 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(8.dp))
-            FilledIconButton(
+            Button(
                 onClick = { triggerVoiceWithPermissionCheck() },
-                modifier = Modifier.size(56.dp),
-                colors = IconButtonDefaults.filledIconButtonColors(
+                modifier = Modifier.height(56.dp),
+                colors = ButtonDefaults.buttonColors(
                     containerColor = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Mic,
-                    contentDescription = "Spracheingabe"
-                )
+                Text(text = if (isListening) "..." else "MIC", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -311,7 +305,6 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Testmodus-Schalter & Schnelltest-Button für Lippstadt
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
