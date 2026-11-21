@@ -24,7 +24,10 @@ jobs:
         with:
           name: OeffiFinder-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-      - if: github.event_name == 'release'
+      - name: Publish Auto-Update Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v-latest
+          name: Aktuelle Version (${{ github.run_number }})
+          body: Automatischer Build Nr. ${{ github.run_number }}
           files: app/build/outputs/apk/debug/app-debug.apk

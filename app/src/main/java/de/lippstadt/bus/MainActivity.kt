@@ -138,6 +138,12 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
 
     var showAddCityDialog by remember { mutableStateOf(false) }
+    var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var isUpdating by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        availableUpdate = checkForGitHubUpdate(context)
+    }
     var newCityInput by remember { mutableStateOf("") }
 
     @SuppressLint("MissingPermission")
@@ -363,6 +369,28 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
         )
+        availableUpdate?.let { upd ->
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        isUpdating = true
+                        try {
+                            downloadAndInstallApk(context, upd)
+                        } catch (e: Exception) {
+                            statusMessage = "Update-Fehler: ${e.localizedMessage}"
+                        } finally {
+                            isUpdating = false
+                        }
+                    }
+                },
+                enabled = !isUpdating,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (isUpdating) "Lade Update..." else "Update installieren: ${upd.title}")
+            }
+        }
         Spacer(modifier = Modifier.height(8.dp))
 
         Row(
@@ -617,4 +645,62 @@ private fun httpGet(urlString: String): String {
         throw IllegalStateException("HTTP ${conn.responseCode}")
     }
     return conn.inputStream.bufferedReader().use { it.readText() }
+}
+
+data class AppUpdateInfo(
+    val title: String,
+    val downloadUrl: String
+)
+
+suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
+    try {
+        val jsonStr = httpGet("https://api.github.com/repos/ClaudeHoeni/LippstadtBus/releases/tags/v-latest")
+        val obj = JSONObject(jsonStr)
+        val remoteTitle = obj.optString("name", "")
+        val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
+        val installedTitle = prefs.getString("installed_release_name", "") ?: ""
+
+        if (remoteTitle.isBlank() || remoteTitle == installedTitle) return@withContext null
+
+        val assets = obj.optJSONArray("assets") ?: return@withContext null
+        for (i in 0 until assets.length()) {
+            val asset = assets.getJSONObject(i)
+            val url = asset.optString("browser_download_url", "")
+            if (url.endsWith(".apk")) {
+                return@withContext AppUpdateInfo(title = remoteTitle, downloadUrl = url)
+            }
+        }
+        null
+    } catch (_: Exception) {
+        null
+    }
+}
+
+suspend fun downloadAndInstallApk(context: Context, update: AppUpdateInfo) {
+    val apkFile = withContext(Dispatchers.IO) {
+        val targetFile = java.io.File(context.cacheDir, "update.apk")
+        val conn = URL(update.downloadUrl).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "OeffiFinderUpdater/1.0")
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.inputStream.use { input ->
+            targetFile.outputStream().use { output ->
+                input.copyTo(output)
+            }
+        }
+        context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
+            .edit().putString("installed_release_name", update.title).apply()
+        targetFile
+    }
+
+    val uri = androidx.core.content.FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        apkFile
+    )
+    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.startActivity(installIntent)
 }
