@@ -10,12 +10,13 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,13 +48,15 @@ import java.util.Date
 import java.util.Locale
 
 data class ParsedVoiceQuery(
+    val origin: String?,
     val destination: String,
-    val preferredMode: String?,      // z. B. "BUS", "SUBWAY", "SUBURBAN", "TRAM", "RAIL" oder null für alle
-    val modeDisplayName: String?     // z. B. "Bus", "U-Bahn", "S-Bahn", "Tram", "Bahn"
+    val preferredMode: String?,
+    val modeDisplayName: String?
 )
 
 data class RouteLegInfo(
     val isWalk: Boolean,
+    val isTransfer: Boolean,
     val lineName: String,
     val direction: String,
     val fromStop: String,
@@ -75,12 +78,6 @@ data class TransitConnection(
     val totalDurationMinutes: Int,
     val transfersCount: Int,
     val legs: List<RouteLegInfo>
-)
-
-data class CityOption(
-    val name: String,
-    val lat: Double?,
-    val lon: Double?
 )
 
 data class AppUpdateInfo(
@@ -118,12 +115,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Erkennt natürliche Sätze wie:
- * - "Wie komme ich mit dem nächsten Bus nach Hauptbahnhof?"
- * - "Wie komme ich mit der U-Bahn nach Alexanderplatz?"
- * - "Nächste S-Bahn zum Potsdamer Platz"
- */
+private fun cleanPlaceArticle(place: String): String {
+    return place
+        .replace(Regex("^(dem|der|den|das|die)\\s+", RegexOption.IGNORE_CASE), "")
+        .trim()
+}
+
 fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
     val text = rawInput.trim().trimEnd('?', '!', '.')
     val lower = text.lowercase(Locale.GERMANY)
@@ -137,7 +134,24 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         else -> null to null
     }
 
-    // Ziel hinter "nach", "zum", "zur", "zu", "in Richtung", "richtung" herausziehen
+    val fromToRegex = Regex(
+        "(?:von|ab)\\s+(.+?)\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
+        RegexOption.IGNORE_CASE
+    )
+    val fromToMatch = fromToRegex.find(text)
+    if (fromToMatch != null) {
+        val rawOrigin = cleanPlaceArticle(fromToMatch.groupValues[1])
+        val rawDest = cleanPlaceArticle(fromToMatch.groupValues[2])
+        if (rawOrigin.isNotBlank() && rawDest.isNotBlank()) {
+            return ParsedVoiceQuery(
+                origin = rawOrigin,
+                destination = rawDest,
+                preferredMode = modeCode,
+                modeDisplayName = modeLabel
+            )
+        }
+    }
+
     val targetRegex = Regex(
         "(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
         RegexOption.IGNORE_CASE
@@ -146,7 +160,6 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
     var extractedDest = if (match != null) {
         match.groupValues[1].trim()
     } else {
-        // Falls kein "nach/zum" gesprochen wurde, bekannte Einleitungsfloskeln entfernen
         text.replace(
             Regex(
                 "^(wie\\s+komme\\s+ich\\s+|wann\\s+fährt\\s+|wann\\s+faehrt\\s+|nächster\\s+|naechster\\s+|nächste\\s+|naechste\\s+|mit\\s+dem\\s+|mit\\s+der\\s+|bus\\s+|u-bahn\\s+|ubahn\\s+|s-bahn\\s+|sbahn\\s+)+",
@@ -156,53 +169,68 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         ).trim()
     }
 
-    // Führende Artikel am Ziel bereinigen ("zum Bahnhof" -> "Bahnhof", "zur Erlenstraße" -> "Erlenstraße")
-    extractedDest = extractedDest.replace(
-        Regex("^(dem|der|den|das|die)\\s+", RegexOption.IGNORE_CASE),
-        ""
-    ).trim()
-
+    extractedDest = cleanPlaceArticle(extractedDest)
     if (extractedDest.isBlank()) {
         extractedDest = text
     }
 
     return ParsedVoiceQuery(
+        origin = null,
         destination = extractedDest,
         preferredMode = modeCode,
         modeDisplayName = modeLabel
     )
 }
 
-private fun loadSavedCities(context: Context): List<CityOption> {
-    val defaultCities = listOf(
-        CityOption("GPS (Auto)", null, null),
-        CityOption("Berlin", 52.5200, 13.4050),
-        CityOption("Potsdam", 52.3906, 13.0645),
-        CityOption("59555 Lippstadt", 51.6754, 8.3446),
-        CityOption("Hamburg", 53.5511, 9.9937)
-    )
-    val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
-    val customRaw = prefs.getString("custom_cities", "") ?: ""
-    if (customRaw.isBlank()) return defaultCities
-
-    val customList = customRaw.split(";").mapNotNull { entry ->
-        val parts = entry.split("|")
-        if (parts.size == 3) {
-            val lat = parts[1].toDoubleOrNull()
-            val lon = parts[2].toDoubleOrNull()
-            if (lat != null && lon != null) CityOption(parts[0], lat, lon) else null
-        } else null
-    }
-    return defaultCities + customList
+private fun formatLineForSpeech(rawLine: String): String {
+    return rawLine
+        .replace(Regex("^SUBWAY\\b", RegexOption.IGNORE_CASE), "U-Bahn")
+        .replace(Regex("^SUBURBAN\\b", RegexOption.IGNORE_CASE), "S-Bahn")
+        .replace(Regex("^BUS\\b", RegexOption.IGNORE_CASE), "Bus")
+        .replace(Regex("^TRAM\\b", RegexOption.IGNORE_CASE), "Straßenbahn")
+        .replace(Regex("^RAIL\\b", RegexOption.IGNORE_CASE), "Bahn")
+        .replace(Regex("^FERRY\\b", RegexOption.IGNORE_CASE), "Fähre")
 }
 
-private fun saveCustomCity(context: Context, city: CityOption) {
-    if (city.lat == null || city.lon == null) return
-    val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
-    val existing = prefs.getString("custom_cities", "") ?: ""
-    val entry = "${city.name.replace(";", "").replace("|", "")}|${city.lat}|${city.lon}"
-    val updated = if (existing.isBlank()) entry else "$existing;$entry"
-    prefs.edit().putString("custom_cities", updated).apply()
+private fun formatTimeForSpeech(hhMm: String): String {
+    val parts = hhMm.split(":")
+    if (parts.size != 2) return hhMm
+    val hour = parts[0].toIntOrNull() ?: return hhMm
+    val min = parts[1].toIntOrNull() ?: return hhMm
+    return if (min == 0) "$hour Uhr" else "$hour Uhr $min"
+}
+
+/**
+ * Erzeugt eine kompakte, gut verständliche Zusammenfassung zum Vorlesen.
+ */
+fun buildSpokenSummary(conn: TransitConnection): String {
+    val sb = StringBuilder()
+    val delayNote = if (conn.firstDelayMinutes > 0) {
+        ", aktuell ${conn.firstDelayMinutes} Minuten Verspätung"
+    } else {
+        ""
+    }
+
+    val transitLegs = conn.legs.filter { !it.isWalk && !it.isTransfer }
+    val firstTransit = transitLegs.firstOrNull()
+    if (firstTransit != null) {
+        sb.append("Abfahrt um ${formatTimeForSpeech(conn.firstDepartureTime)}$delayNote ")
+        sb.append("ab ${firstTransit.fromStop} mit ${formatLineForSpeech(firstTransit.lineName)} ")
+        sb.append("in Richtung ${firstTransit.direction}. ")
+    }
+
+    for (leg in conn.legs) {
+        if (leg.isTransfer) {
+            sb.append("Umstieg an ${leg.fromStop}, ${leg.durationMinutes} Minuten Übergang. ")
+        } else if (!leg.isWalk && leg != firstTransit) {
+            sb.append("Weiter um ${formatTimeForSpeech(leg.startTime)} mit ${formatLineForSpeech(leg.lineName)} ")
+            sb.append("Richtung ${leg.direction}. ")
+        }
+    }
+
+    sb.append("Ankunft am Ziel um ${formatTimeForSpeech(conn.finalArrivalTime)}. ")
+    sb.append("Gesamtdauer ${conn.totalDurationMinutes} Minuten.")
+    return sb.toString()
 }
 
 @Composable
@@ -211,27 +239,91 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val scope = rememberCoroutineScope()
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
-    var cities by remember { mutableStateOf(loadSavedCities(context)) }
-    var selectedCity by remember { mutableStateOf(cities.first()) }
     var detectedGpsCity by remember { mutableStateOf<String?>(null) }
 
     var destinationInput by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("Bereit. Ziel eingeben oder z. B. sagen: \"Wie komme ich mit dem nächsten Bus nach...\"") }
+    var statusMessage by remember { mutableStateOf("Bereit. Ziel eingeben oder sprechen.") }
     var isLoading by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
+    var isSpeaking by remember { mutableStateOf(false) }
 
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
     var selectedConnectionIndex by remember { mutableStateOf(0) }
     var nextHourDropdownExpanded by remember { mutableStateOf(false) }
 
-    var showAddCityDialog by remember { mutableStateOf(false) }
-    var newCityInput by remember { mutableStateOf("") }
-
     var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var isUpdating by remember { mutableStateOf(false) }
 
+    // Text-to-Speech (Sprachausgabe) initialisieren
+    var ttsReady by remember { mutableStateOf(false) }
+    val tts = remember {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engine?.language = Locale.GERMANY
+                ttsReady = true
+            }
+        }
+        engine
+    }
+
+    DisposableEffect(Unit) {
+        tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                isSpeaking = true
+            }
+            override fun onDone(utteranceId: String?) {
+                isSpeaking = false
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                isSpeaking = false
+            }
+        })
+        onDispose {
+            tts?.stop()
+            tts?.shutdown()
+        }
+    }
+
+    fun toggleSpeakConnection(conn: TransitConnection) {
+        if (tts == null || !ttsReady) {
+            statusMessage = "Sprachausgabe auf diesem Gerät nicht verfügbar."
+            return
+        }
+        if (isSpeaking) {
+            tts.stop()
+            isSpeaking = false
+        } else {
+            val summaryText = buildSpokenSummary(conn)
+            tts.speak(summaryText, TextToSpeech.QUEUE_FLUSH, null, "conn_summary")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun detectCurrentLocation(): Triple<Double, Double, String>? {
+        val hasLoc = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasLoc) return null
+
+        val location = fusedLocationClient.getCurrentLocation(
+            Priority.PRIORITY_HIGH_ACCURACY, null
+        ).await() ?: fusedLocationClient.lastLocation.await() ?: return null
+
+        val city = resolveCityNameFromCoords(context, location.latitude, location.longitude) ?: ""
+        if (city.isNotBlank()) {
+            detectedGpsCity = city
+        }
+        return Triple(location.latitude, location.longitude, city)
+    }
+
     LaunchedEffect(Unit) {
         availableUpdate = checkForGitHubUpdate(context)
+        detectCurrentLocation()
     }
 
     @SuppressLint("MissingPermission")
@@ -242,8 +334,17 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             return
         }
 
+        if (isSpeaking) {
+            tts?.stop()
+            isSpeaking = false
+        }
+
         val parsed = parseNaturalTransitRequest(rawText)
-        destinationInput = parsed.destination
+        destinationInput = if (parsed.origin != null) {
+            "Von ${parsed.origin} nach ${parsed.destination}"
+        } else {
+            parsed.destination
+        }
 
         scope.launch {
             isLoading = true
@@ -252,40 +353,29 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             nextHourDropdownExpanded = false
 
             try {
-                val lat: Double
-                val lon: Double
-                val cityContextName: String
-
-                if (selectedCity.lat != null && selectedCity.lon != null) {
-                    lat = selectedCity.lat!!
-                    lon = selectedCity.lon!!
-                    cityContextName = selectedCity.name
-                } else {
-                    statusMessage = "Ermittle aktuellen GPS-Standort..."
-                    val location = fusedLocationClient.getCurrentLocation(
-                        Priority.PRIORITY_HIGH_ACCURACY, null
-                    ).await() ?: fusedLocationClient.lastLocation.await()
-
-                    if (location == null) {
-                        statusMessage = "GPS nicht verfügbar. Wähle oben eine Stadt."
-                        isLoading = false
-                        return@launch
-                    }
-                    lat = location.latitude
-                    lon = location.longitude
-                    val resolvedCity = resolveCityNameFromCoords(context, lat, lon)
-                    detectedGpsCity = resolvedCity
-                    cityContextName = resolvedCity ?: ""
+                statusMessage = "Ermittle aktuellen GPS-Standort..."
+                val locData = detectCurrentLocation()
+                if (locData == null) {
+                    statusMessage = "GPS-Standort nicht verfügbar. Bitte Standortdienst & Berechtigung aktivieren."
+                    isLoading = false
+                    return@launch
                 }
 
+                val (baseLat, baseLon, cityContextName) = locData
                 val modeHint = if (parsed.modeDisplayName != null) " (${parsed.modeDisplayName})" else ""
                 val areaHint = if (cityContextName.isNotBlank()) " in $cityContextName" else ""
-                statusMessage = "Suche$modeHint nach \"${parsed.destination}\"$areaHint..."
+                val routeLabel = if (parsed.origin != null) {
+                    "ab \"${parsed.origin}\" nach \"${parsed.destination}\""
+                } else {
+                    "nach \"${parsed.destination}\""
+                }
+                statusMessage = "Suche$modeHint $routeLabel$areaHint..."
 
                 val results = fetchConnections(
-                    fromLat = lat,
-                    fromLon = lon,
-                    query = parsed.destination,
+                    fallbackLat = baseLat,
+                    fallbackLon = baseLon,
+                    originQuery = parsed.origin,
+                    destQuery = parsed.destination,
                     cityContext = cityContextName,
                     preferredMode = parsed.preferredMode
                 )
@@ -318,6 +408,10 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             statusMessage = "Spracherkennung auf diesem Gerät nicht verfügbar."
             return
         }
+        if (isSpeaking) {
+            tts?.stop()
+            isSpeaking = false
+        }
         val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
@@ -326,7 +420,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListening = true
-                statusMessage = "Höre zu... Sag z. B. \"Wie komme ich mit dem nächsten Bus nach...\""
+                statusMessage = "Höre zu... Bitte Ziel nennen."
             }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
@@ -357,6 +451,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         val audioOk = perms[Manifest.permission.RECORD_AUDIO] == true
+        val locOk = perms[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                perms[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (locOk) {
+            scope.launch { detectCurrentLocation() }
+        }
         if (pendingVoiceAfterPermission) {
             pendingVoiceAfterPermission = false
             if (audioOk) {
@@ -373,9 +472,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         ) == PackageManager.PERMISSION_GRANTED
         val hasLoc = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (hasAudio && (hasLoc || selectedCity.lat != null)) {
+        if (hasAudio && hasLoc) {
             startVoiceInput()
         } else {
             pendingVoiceAfterPermission = true
@@ -410,60 +511,34 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
-    if (showAddCityDialog) {
-        AlertDialog(
-            onDismissRequest = { showAddCityDialog = false },
-            title = { Text("Stadt / Urlaubsort hinzufügen") },
-            text = {
-                OutlinedTextField(
-                    value = newCityInput,
-                    onValueChange = { newCityInput = it },
-                    label = { Text("Stadt oder PLZ (z. B. München, Wien)") },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val cityQuery = newCityInput.trim()
-                    if (cityQuery.isNotBlank()) {
-                        showAddCityDialog = false
-                        newCityInput = ""
-                        scope.launch {
-                            statusMessage = "Suche Koordinaten für \"$cityQuery\"..."
-                            val found = lookupCityCoordinates(cityQuery)
-                            if (found != null) {
-                                saveCustomCity(context, found)
-                                cities = loadSavedCities(context)
-                                selectedCity = found
-                                statusMessage = "Ort \"${found.name}\" hinzugefügt."
-                            } else {
-                                statusMessage = "Ort \"$cityQuery\" nicht gefunden."
-                            }
-                        }
-                    }
-                }) {
-                    Text("Speichern")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddCityDialog = false }) {
-                    Text("Abbrechen")
-                }
-            }
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(14.dp)
     ) {
-        Text(
-            text = "Abfahrten Next&Here",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Abfahrten Next&Here",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer
+            ) {
+                Text(
+                    text = if (!detectedGpsCity.isNullOrBlank()) "📍 $detectedGpsCity" else "📍 GPS aktiv",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+        }
 
         availableUpdate?.let { upd ->
             Spacer(modifier = Modifier.height(6.dp))
@@ -488,36 +563,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            cities.forEach { city ->
-                val label = if (city.lat == null && detectedGpsCity != null) {
-                    "GPS ($detectedGpsCity)"
-                } else {
-                    city.name
-                }
-                FilterChip(
-                    selected = selectedCity.name == city.name,
-                    onClick = { selectedCity = city },
-                    label = { Text(label) }
-                )
-            }
-            OutlinedButton(
-                onClick = { showAddCityDialog = true },
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-            ) {
-                Text("+ Ort")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -526,8 +572,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             OutlinedTextField(
                 value = destinationInput,
                 onValueChange = { destinationInput = it },
-                label = { Text("Ziel oder Satz eingeben") },
-                placeholder = { Text("z. B. mit dem Bus nach Bahnhof") },
+                label = { Text("Ziel oder \"von ... nach ...\"") },
+                placeholder = { Text("z. B. mit dem Bus zum Bahnhof") },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -560,7 +606,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        // HAUPTBILDSCHIRM: AKTUELL BESTE VERBINDUNG
+        // HAUPTBILDSCHIRM: AKTUELL BESTE VERBINDUNG + BUTTON "VORLESEN"
         val activeConn = connections.getOrNull(selectedConnectionIndex)
         if (activeConn != null) {
             Card(
@@ -600,13 +646,45 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // BUTTON: ZUSAMMENFASSUNG VORLESEN
+                    FilledTonalButton(
+                        onClick = { toggleSpeakConnection(activeConn) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (isSpeaking) "⏹ Vorlesen stoppen" else "🔊 Vorlesen",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(10.dp))
 
                     activeConn.legs.forEachIndexed { idx, leg ->
                         if (idx > 0) {
                             Spacer(modifier = Modifier.height(8.dp))
                         }
-                        if (leg.isWalk) {
+                        if (leg.isTransfer) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val distNote = if (leg.distanceMeters > 0) ", ${leg.distanceMeters} m" else ""
+                                Text(
+                                    text = "↻ Umstieg an ${leg.fromStop} (${leg.durationMinutes} Min. Übergang$distNote)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                        } else if (leg.isWalk) {
                             Text(
                                 text = "↳ Fußweg (${leg.durationMinutes} Min., ${leg.distanceMeters} m) → ${leg.toStop}",
                                 style = MaterialTheme.typography.bodySmall,
@@ -694,13 +772,17 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min.) · Ab ${conn.legs.firstOrNull { !it.isWalk }?.fromStop ?: ""}",
+                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min.) · Ab ${conn.legs.firstOrNull { !it.isWalk && !it.isTransfer }?.fromStop ?: ""}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             },
                             onClick = {
+                                if (isSpeaking) {
+                                    tts?.stop()
+                                    isSpeaking = false
+                                }
                                 selectedConnectionIndex = index
                                 nextHourDropdownExpanded = false
                                 statusMessage = if (index == 0) {
@@ -740,47 +822,70 @@ suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double
             val addr = list?.firstOrNull()
             addr?.locality ?: addr?.subAdminArea
         } catch (e: Exception) {
-            null
+            try {
+                val url = "https://api.transitous.org/api/v1/reverse-geocode?place=$lat,$lon"
+                val arr = JSONArray(httpGet(url))
+                if (arr.length() > 0) {
+                    val obj = arr.getJSONObject(0)
+                    val areas = obj.optJSONArray("areas")
+                    if (areas != null && areas.length() > 0) {
+                        areas.getJSONObject(0).optString("name", "").ifBlank { null }
+                    } else null
+                } else null
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
-suspend fun lookupCityCoordinates(cityQuery: String): CityOption? = withContext(Dispatchers.IO) {
-    try {
-        val url = "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(cityQuery, "UTF-8")}"
+private fun geocodePlace(placeQuery: String, biasLat: Double, biasLon: Double): Triple<Double, Double, String>? {
+    return try {
+        val encoded = URLEncoder.encode(placeQuery, "UTF-8")
+        val url = "https://api.transitous.org/api/v1/geocode?text=$encoded&place=$biasLat,$biasLon"
         val arr = JSONArray(httpGet(url))
-        if (arr.length() == 0) return@withContext null
+        if (arr.length() == 0) return null
         val obj = arr.getJSONObject(0)
-        val name = obj.optString("name", cityQuery)
-        val lat = obj.getDouble("lat")
-        val lon = obj.getDouble("lon")
-        CityOption(name = name, lat = lat, lon = lon)
-    } catch (e: Exception) {
+        Triple(
+            obj.getDouble("lat"),
+            obj.getDouble("lon"),
+            obj.optString("name", placeQuery)
+        )
+    } catch (_: Exception) {
         null
     }
 }
 
 suspend fun fetchConnections(
-    fromLat: Double,
-    fromLon: Double,
-    query: String,
+    fallbackLat: Double,
+    fallbackLon: Double,
+    originQuery: String?,
+    destQuery: String,
     cityContext: String,
     preferredMode: String? = null
 ): List<TransitConnection> = withContext(Dispatchers.IO) {
-    val enrichedQuery = buildEnrichedQuery(query, cityContext)
-    val encodedQuery = URLEncoder.encode(enrichedQuery, "UTF-8")
+    val startLat: Double
+    val startLon: Double
+    if (!originQuery.isNullOrBlank()) {
+        val enrichedOrigin = buildEnrichedQuery(originQuery, cityContext)
+        val resolvedOrigin = geocodePlace(enrichedOrigin, fallbackLat, fallbackLon)
+            ?: return@withContext emptyList()
+        startLat = resolvedOrigin.first
+        startLon = resolvedOrigin.second
+    } else {
+        startLat = fallbackLat
+        startLon = fallbackLon
+    }
 
-    val geoUrl = "https://api.transitous.org/api/v1/geocode?text=$encodedQuery&place=$fromLat,$fromLon"
-    val geoArray = JSONArray(httpGet(geoUrl))
-    if (geoArray.length() == 0) return@withContext emptyList()
-
-    val destObj = geoArray.getJSONObject(0)
-    val destLat = destObj.getDouble("lat")
-    val destLon = destObj.getDouble("lon")
-    val destName = destObj.optString("name", enrichedQuery)
+    val enrichedDest = buildEnrichedQuery(destQuery, cityContext)
+    val resolvedDest = geocodePlace(enrichedDest, startLat, startLon)
+        ?: return@withContext emptyList()
+    val destLat = resolvedDest.first
+    val destLon = resolvedDest.second
+    val destName = resolvedDest.third
 
     val modeParam = if (preferredMode != null) "&transitModes=$preferredMode" else ""
     val planUrl = "https://api.transitous.org/api/v1/plan" +
-            "?fromPlace=$fromLat,$fromLon" +
+            "?fromPlace=$startLat,$startLon" +
             "&toPlace=$destLat,$destLon" +
             "&numItineraries=12$modeParam"
 
@@ -794,7 +899,7 @@ suspend fun fetchConnections(
         val itinerary = itineraries.getJSONObject(i)
         val legsJson = itinerary.getJSONArray("legs")
         val totalDurSec = itinerary.optInt("duration", 0)
-        val parsedLegs = mutableListOf<RouteLegInfo>()
+        val rawParsedLegs = mutableListOf<RouteLegInfo>()
         val transitLineNames = mutableListOf<String>()
 
         var firstTransitDepartureTime = ""
@@ -822,22 +927,21 @@ suspend fun fetchConnections(
             finalArrTime = formattedEnd
 
             if (isWalk) {
-                if (dist >= 40 || durSec >= 60) {
-                    parsedLegs.add(
-                        RouteLegInfo(
-                            isWalk = true,
-                            lineName = "Fußweg",
-                            direction = "",
-                            fromStop = originName,
-                            toStop = arrivalStopName,
-                            startTime = formattedStart,
-                            endTime = formattedEnd,
-                            delayMinutes = 0,
-                            durationMinutes = maxOf(1, durSec / 60),
-                            distanceMeters = dist
-                        )
+                rawParsedLegs.add(
+                    RouteLegInfo(
+                        isWalk = true,
+                        isTransfer = false,
+                        lineName = "Fußweg",
+                        direction = "",
+                        fromStop = originName,
+                        toStop = arrivalStopName,
+                        startTime = formattedStart,
+                        endTime = formattedEnd,
+                        delayMinutes = 0,
+                        durationMinutes = maxOf(1, durSec / 60),
+                        distanceMeters = dist
                     )
-                }
+                )
             } else {
                 val routeShort = leg.optString("routeShortName", "")
                 val displayName = if (routeShort.isNotBlank()) {
@@ -857,9 +961,10 @@ suspend fun fetchConnections(
                 }
 
                 transitLineNames.add(displayName)
-                parsedLegs.add(
+                rawParsedLegs.add(
                     RouteLegInfo(
                         isWalk = false,
+                        isTransfer = false,
                         lineName = displayName,
                         direction = headsign,
                         fromStop = originName,
@@ -876,6 +981,56 @@ suspend fun fetchConnections(
 
         if (transitLineNames.isEmpty()) continue
 
+        val finalLegs = mutableListOf<RouteLegInfo>()
+        var seenFirstTransit = false
+        for (idx in rawParsedLegs.indices) {
+            val current = rawParsedLegs[idx]
+            val hasNextTransit = rawParsedLegs.drop(idx + 1).any { !it.isWalk }
+
+            if (!current.isWalk) {
+                if (seenFirstTransit && finalLegs.lastOrNull()?.isTransfer == false) {
+                    val prevTransit = finalLegs.last()
+                    val waitMins = computeMinutesDiff(prevTransit.endTime, current.startTime)
+                    finalLegs.add(
+                        RouteLegInfo(
+                            isWalk = false,
+                            isTransfer = true,
+                            lineName = "Umstieg",
+                            direction = "",
+                            fromStop = current.fromStop,
+                            toStop = current.fromStop,
+                            startTime = prevTransit.endTime,
+                            endTime = current.startTime,
+                            delayMinutes = 0,
+                            durationMinutes = maxOf(1, waitMins),
+                            distanceMeters = 0
+                        )
+                    )
+                }
+                seenFirstTransit = true
+                finalLegs.add(current)
+            } else {
+                if (seenFirstTransit && hasNextTransit) {
+                    val nextTransit = rawParsedLegs.drop(idx + 1).first { !it.isWalk }
+                    val prevTransit = finalLegs.lastOrNull { !it.isWalk && !it.isTransfer }
+                    val waitMins = if (prevTransit != null) {
+                        computeMinutesDiff(prevTransit.endTime, nextTransit.startTime)
+                    } else {
+                        current.durationMinutes
+                    }
+                    finalLegs.add(
+                        current.copy(
+                            isTransfer = true,
+                            fromStop = current.fromStop,
+                            durationMinutes = maxOf(1, waitMins)
+                        )
+                    )
+                } else if (current.distanceMeters >= 40 || current.durationMinutes >= 2) {
+                    finalLegs.add(current)
+                }
+            }
+        }
+
         if (firstTransitDepartureMillis != null && firstTransitDepartureMillis > maxWindowMillis && resultList.size >= 2) {
             continue
         }
@@ -890,11 +1045,24 @@ suspend fun fetchConnections(
                 firstDelayMinutes = firstTransitDelay,
                 totalDurationMinutes = maxOf(1, totalDurSec / 60),
                 transfersCount = maxOf(0, transitLineNames.size - 1),
-                legs = parsedLegs
+                legs = finalLegs
             )
         )
     }
     resultList
+}
+
+private fun computeMinutesDiff(hhMmStart: String, hhMmEnd: String): Int {
+    return try {
+        val p1 = hhMmStart.split(":")
+        val p2 = hhMmEnd.split(":")
+        val m1 = p1[0].toInt() * 60 + p1[1].toInt()
+        var m2 = p2[0].toInt() * 60 + p2[1].toInt()
+        if (m2 < m1) m2 += 24 * 60
+        maxOf(0, m2 - m1)
+    } catch (_: Exception) {
+        1
+    }
 }
 
 private fun formatIsoTime(isoStr: String): String {
@@ -928,7 +1096,7 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.2 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.5 (https://github.com/ClaudeHoeni/LippstadtBus)")
     conn.connectTimeout = 12000
     conn.readTimeout = 12000
     if (conn.responseCode !in 200..299) {
@@ -942,12 +1110,10 @@ suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext
         val jsonStr = httpGet("https://api.github.com/repos/ClaudeHoeni/LippstadtBus/releases/tags/v-latest")
         val obj = JSONObject(jsonStr)
         val remoteTitle = obj.optString("name", "")
-        // Extrahiert die Build-Nummer aus "Aktuelle Version (15)" -> 15 -> versionCode = 115
         val remoteRun = Regex("\\((\\d+)\\)").find(remoteTitle)?.groupValues?.get(1)?.toIntOrNull()
             ?: return@withContext null
         val remoteVersionCode = 100 + remoteRun
 
-        // Nur anzeigen, wenn die Version auf GitHub echt neuer ist als die installierte App!
         if (remoteVersionCode <= BuildConfig.VERSION_CODE) return@withContext null
 
         val assets = obj.optJSONArray("assets") ?: return@withContext null
@@ -976,8 +1142,6 @@ suspend fun downloadAndInstallApk(context: Context, update: AppUpdateInfo) {
                 input.copyTo(output)
             }
         }
-        context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
-            .edit().putString("installed_release_name", update.title).apply()
         targetFile
     }
 
