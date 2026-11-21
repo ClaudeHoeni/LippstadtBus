@@ -5,10 +5,10 @@ import org.junit.Test
 
 class LippstadtBusTest {
     @Test
-    fun testEnrichedQueryForCities() {
+    fun testQueryBuilder() {
         assertEquals("Bahnhof, 59555 Lippstadt", buildEnrichedQuery("Bahnhof", "59555 Lippstadt"))
-        assertEquals("Alexanderplatz, Berlin", buildEnrichedQuery("Alexanderplatz", "Berlin"))
-        assertEquals("Sanssouci, Potsdam", buildEnrichedQuery("Sanssouci", "Potsdam"))
+        assertEquals("Hauptbahnhof, Berlin", buildEnrichedQuery("Hauptbahnhof", "Berlin"))
+        assertEquals("Hauptbahnhof, Hamburg", buildEnrichedQuery("Hauptbahnhof", "Hamburg"))
         assertEquals("Bahnhof Lippstadt", buildEnrichedQuery("Bahnhof Lippstadt", "59555 Lippstadt"))
     }
 }

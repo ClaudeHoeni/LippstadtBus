@@ -1,4 +1,4 @@
-﻿name: Build Lippstadt Bus APK
+name: Build Lippstadt Bus APK
 on:
   push:
     branches: [ "main" ]
@@ -18,13 +18,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Run Lippstadt Simulation Test
-        run: gradle testDebugUnitTest --info
+      - name: Run Unit Tests
+        run: gradle testDebugUnitTest --stacktrace
       - name: Build Debug APK
-        run: gradle assembleDebug --info
+        run: gradle assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: LippstadtBus-APK
+          name: OeffiFinder-APK
           path: app/build/outputs/apk/debug/app-debug.apk
       - if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
