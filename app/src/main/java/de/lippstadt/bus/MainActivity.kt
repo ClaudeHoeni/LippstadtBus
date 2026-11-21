@@ -106,6 +106,46 @@ data class AppUpdateInfo(
     val downloadUrl: String
 )
 
+private fun setDepartureAlarm(context: Context, departureMillis: Long, minutesBefore: Int, label: String): String {
+    val alarmMillis = departureMillis - minutesBefore * 60_000L
+    val cal = Calendar.getInstance(Locale.GERMANY).apply {
+        timeInMillis = alarmMillis
+    }
+    val hour = cal.get(Calendar.HOUR_OF_DAY)
+    val minute = cal.get(Calendar.MINUTE)
+    val formattedAlarm = String.format(Locale.GERMANY, "%02d:%02d", hour, minute)
+
+    val setAlarmIntent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+        putExtra(AlarmClock.EXTRA_HOUR, hour)
+        putExtra(AlarmClock.EXTRA_MINUTES, minute)
+        putExtra(AlarmClock.EXTRA_MESSAGE, label)
+        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+    }
+
+    return try {
+        val resolved = setAlarmIntent.resolveActivity(context.packageManager)
+        if (resolved != null) {
+            context.startActivity(setAlarmIntent)
+            "Wecker auf $formattedAlarm Uhr ($minutesBefore Min. vor Abfahrt) gestellt."
+        } else {
+            val showAlarmsIntent = Intent(AlarmClock.ACTION_SHOW_ALARMS)
+            if (showAlarmsIntent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(showAlarmsIntent)
+                "Uhr-App geöffnet – Wecker auf $formattedAlarm Uhr stellen ($minutesBefore Min. vorher)."
+            } else {
+                "Keine Uhr-App gefunden (Erinnerung: $formattedAlarm Uhr, $minutesBefore Min. vorher)."
+            }
+        }
+    } catch (_: Exception) {
+        try {
+            context.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS))
+            "Uhr-App geöffnet – Wecker auf $formattedAlarm Uhr stellen ($minutesBefore Min. vorher)."
+        } catch (_: Exception) {
+            "Wecker konnte nicht automatisch gestellt werden (Zielzeit: $formattedAlarm Uhr)."
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_VOICE_SEARCH = "de.lippstadt.bus.ACTION_VOICE_SEARCH"
