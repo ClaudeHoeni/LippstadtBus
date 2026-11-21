@@ -1,9 +1,11 @@
-﻿package de.lippstadt.bus
+package de.lippstadt.bus
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Geocoder
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -12,9 +14,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,20 +43,25 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class BusConnection(
+data class TransitConnection(
     val line: String,
     val direction: String,
     val departureTime: String,
     val delayMinutes: Int,
     val originStop: String,
-    val destinationStop: String
+    val destinationStop: String,
+    val walkInfo: String
+)
+
+data class CityOption(
+    val name: String,
+    val lat: Double?,
+    val lon: Double?
 )
 
 class MainActivity : ComponentActivity() {
     companion object {
         const val ACTION_VOICE_SEARCH = "de.lippstadt.bus.ACTION_VOICE_SEARCH"
-        const val TEST_LIPPSTADT_LAT = 51.6754
-        const val TEST_LIPPSTADT_LON = 8.3446
     }
 
     private var voiceTriggerCounter by mutableStateOf(0)
@@ -65,7 +74,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    BusFinderScreen(externalVoiceTrigger = voiceTriggerCounter)
+                    TransitFinderScreen(externalVoiceTrigger = voiceTriggerCounter)
                 }
             }
         }
@@ -73,30 +82,66 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         if (intent.action == ACTION_VOICE_SEARCH) {
             voiceTriggerCounter++
         }
     }
 }
 
+private fun loadSavedCities(context: Context): List<CityOption> {
+    val defaultCities = listOf(
+        CityOption("GPS (Auto)", null, null),
+        CityOption("Berlin", 52.5200, 13.4050),
+        CityOption("Potsdam", 52.3906, 13.0645),
+        CityOption("59555 Lippstadt", 51.6754, 8.3446),
+        CityOption("Hamburg", 53.5511, 9.9937)
+    )
+    val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
+    val customRaw = prefs.getString("custom_cities", "") ?: ""
+    if (customRaw.isBlank()) return defaultCities
+
+    val customList = customRaw.split(";").mapNotNull { entry ->
+        val parts = entry.split("|")
+        if (parts.size == 3) {
+            val lat = parts[1].toDoubleOrNull()
+            val lon = parts[2].toDoubleOrNull()
+            if (lat != null && lon != null) CityOption(parts[0], lat, lon) else null
+        } else null
+    }
+    return defaultCities + customList
+}
+
+private fun saveCustomCity(context: Context, city: CityOption) {
+    if (city.lat == null || city.lon == null) return
+    val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
+    val existing = prefs.getString("custom_cities", "") ?: ""
+    val entry = "${city.name.replace(";", "").replace("|", "")}|${city.lat}|${city.lon}"
+    val updated = if (existing.isBlank()) entry else "$existing;$entry"
+    prefs.edit().putString("custom_cities", updated).apply()
+}
+
 @Composable
-fun BusFinderScreen(externalVoiceTrigger: Int) {
+fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
+    var cities by remember { mutableStateOf(loadSavedCities(context)) }
+    var selectedCity by remember { mutableStateOf(cities.first()) }
+    var detectedGpsCity by remember { mutableStateOf<String?>(null) }
+
     var destinationInput by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("Bereit. Ziel eingeben, Mikrofon nutzen oder Lippstadt-Test starten.") }
+    var statusMessage by remember { mutableStateOf("Bereit. Ziel eingeben oder Mikrofon tippen.") }
     var isLoading by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
-    var useSimulatedLippstadtLocation by remember { mutableStateOf(false) }
-    var connections by remember { mutableStateOf<List<BusConnection>>(emptyList()) }
+    var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
+
+    var showAddCityDialog by remember { mutableStateOf(false) }
+    var newCityInput by remember { mutableStateOf("") }
 
     @SuppressLint("MissingPermission")
-    fun searchBus(
-        queryOverride: String? = null,
-        forceSimulatedLocation: Boolean = useSimulatedLippstadtLocation
-    ) {
+    fun searchTransit(queryOverride: String? = null) {
         val target = (queryOverride ?: destinationInput).trim()
         if (target.isBlank()) {
             statusMessage = "Bitte ein Ziel oder eine Adresse eingeben."
@@ -109,38 +154,45 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
             try {
                 val lat: Double
                 val lon: Double
+                val cityContextName: String
 
-                if (forceSimulatedLocation) {
-                    lat = MainActivity.TEST_LIPPSTADT_LAT
-                    lon = MainActivity.TEST_LIPPSTADT_LON
-                    statusMessage = "[TESTMODUS] Simuliere Standort Marktplatz Lippstadt -> \"$target\"..."
+                if (selectedCity.lat != null && selectedCity.lon != null) {
+                    lat = selectedCity.lat!!
+                    lon = selectedCity.lon!!
+                    cityContextName = selectedCity.name
+                    statusMessage = "[${selectedCity.name}] Suche Verbindungen nach \"$target\"..."
                 } else {
-                    statusMessage = "Ermittle GPS-Standort..."
+                    statusMessage = "Ermittle aktuellen GPS-Standort..."
                     val location = fusedLocationClient.getCurrentLocation(
                         Priority.PRIORITY_HIGH_ACCURACY, null
                     ).await() ?: fusedLocationClient.lastLocation.await()
 
                     if (location == null) {
-                        statusMessage = "GPS-Position nicht verfuegbar. Nutze den Testmodus fuer Lippstadt."
+                        statusMessage = "GPS nicht verfügbar. Wähle oben eine Stadt."
                         isLoading = false
                         return@launch
                     }
                     lat = location.latitude
                     lon = location.longitude
-                    statusMessage = "Suche Busverbindungen nach \"$target\"..."
+                    val resolvedCity = resolveCityNameFromCoords(context, lat, lon)
+                    detectedGpsCity = resolvedCity
+                    cityContextName = resolvedCity ?: ""
+                    val locLabel = if (cityContextName.isNotBlank()) " ($cityContextName)" else ""
+                    statusMessage = "Standort erkannt$locLabel. Suche nach \"$target\"..."
                 }
 
                 val results = fetchConnections(
                     fromLat = lat,
                     fromLon = lon,
-                    query = target
+                    query = target,
+                    cityContext = cityContextName
                 )
                 connections = results
                 statusMessage = if (results.isEmpty()) {
-                    "Keine direkten Busverbindungen gefunden."
+                    "Keine Verbindungen gefunden."
                 } else {
-                    val prefix = if (forceSimulatedLocation) "[TEST LIPPSTADT] " else ""
-                    "${prefix}Naechste Verbindungen gefunden:"
+                    val areaLabel = if (cityContextName.isNotBlank()) " in $cityContextName" else ""
+                    "Nächste Abfahrten$areaLabel:"
                 }
             } catch (e: Exception) {
                 statusMessage = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
@@ -162,25 +214,23 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
 
     fun startVoiceInput() {
         if (speechRecognizer == null) {
-            statusMessage = "Spracherkennung ist auf diesem Geraet nicht verfuegbar."
+            statusMessage = "Spracherkennung auf diesem Gerät nicht verfügbar."
             return
         }
         val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Wohin in Lippstadt?")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Wohin möchtest du fahren?")
         }
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListening = true
-                statusMessage = "Hoere zu... Bitte Ziel nennen."
+                statusMessage = "Höre zu... Bitte Ziel nennen."
             }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                isListening = false
-            }
+            override fun onEndOfSpeech() { isListening = false }
             override fun onError(error: Int) {
                 isListening = false
                 statusMessage = "Spracheingabe nicht verstanden (Code $error)."
@@ -192,7 +242,7 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
                     ?.firstOrNull()
                 if (!spoken.isNullOrBlank()) {
                     destinationInput = spoken
-                    searchBus(queryOverride = spoken)
+                    searchTransit(queryOverride = spoken)
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
@@ -207,11 +257,13 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         val audioOk = perms[Manifest.permission.RECORD_AUDIO] == true
-        if (pendingVoiceAfterPermission && audioOk) {
+        if (pendingVoiceAfterPermission) {
             pendingVoiceAfterPermission = false
-            startVoiceInput()
-        } else {
-            statusMessage = "Berechtigungen aktualisiert."
+            if (audioOk) {
+                startVoiceInput()
+            } else {
+                statusMessage = "Mikrofon-Berechtigung wurde abgelehnt."
+            }
         }
     }
 
@@ -223,7 +275,7 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
 
-        if (hasAudio && (hasLoc || useSimulatedLippstadtLocation)) {
+        if (hasAudio && (hasLoc || selectedCity.lat != null)) {
             startVoiceInput()
         } else {
             pendingVoiceAfterPermission = true
@@ -258,17 +310,89 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
+    if (showAddCityDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddCityDialog = false },
+            title = { Text("Stadt / Urlaubsort hinzufügen") },
+            text = {
+                OutlinedTextField(
+                    value = newCityInput,
+                    onValueChange = { newCityInput = it },
+                    label = { Text("Stadt oder PLZ (z. B. München, Wien)") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val cityQuery = newCityInput.trim()
+                    if (cityQuery.isNotBlank()) {
+                        showAddCityDialog = false
+                        newCityInput = ""
+                        scope.launch {
+                            statusMessage = "Suche Koordinaten für \"$cityQuery\"..."
+                            val found = lookupCityCoordinates(cityQuery)
+                            if (found != null) {
+                                saveCustomCity(context, found)
+                                cities = loadSavedCities(context)
+                                selectedCity = found
+                                statusMessage = "Ort \"${found.name}\" hinzugefügt."
+                            } else {
+                                statusMessage = "Ort \"$cityQuery\" nicht gefunden."
+                            }
+                        }
+                    }
+                }) {
+                    Text("Speichern")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAddCityDialog = false }) {
+                    Text("Abbrechen")
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
     ) {
         Text(
-            text = "Oeffi Lippstadt (59555)",
+            text = "Öffi Finder",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
         )
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            cities.forEach { city ->
+                val label = if (city.lat == null && detectedGpsCity != null) {
+                    "GPS ($detectedGpsCity)"
+                } else {
+                    city.name
+                }
+                FilterChip(
+                    selected = selectedCity.name == city.name,
+                    onClick = { selectedCity = city },
+                    label = { Text(label) }
+                )
+            }
+            OutlinedButton(
+                onClick = { showAddCityDialog = true },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+            ) {
+                Text("+ Ort")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -278,7 +402,7 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
                 value = destinationInput,
                 onValueChange = { destinationInput = it },
                 label = { Text("Ziel / Haltestelle / Adresse") },
-                placeholder = { Text("z. B. Bahnhof, Klinikum, Marktstrasse") },
+                placeholder = { Text("z. B. Hauptbahnhof, Marktplatz") },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -296,42 +420,11 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
         Spacer(modifier = Modifier.height(8.dp))
 
         Button(
-            onClick = { searchBus() },
+            onClick = { searchTransit() },
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (isLoading) "Suche laeuft..." else "Naechsten Bus finden")
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                text = "Standort Lippstadt simulieren",
-                style = MaterialTheme.typography.bodySmall
-            )
-            Switch(
-                checked = useSimulatedLippstadtLocation,
-                onCheckedChange = { useSimulatedLippstadtLocation = it }
-            )
-        }
-
-        OutlinedButton(
-            onClick = {
-                useSimulatedLippstadtLocation = true
-                if (destinationInput.isBlank()) {
-                    destinationInput = "Bahnhof"
-                }
-                searchBus(queryOverride = destinationInput, forceSimulatedLocation = true)
-            },
-            enabled = !isLoading,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Test: Ab Marktplatz Lippstadt suchen")
+            Text(if (isLoading) "Suche läuft..." else "Nächste Verbindung finden")
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -347,11 +440,11 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "Linie ${conn.line}",
+                                text = conn.line,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
-                            val delayText = if (conn.delayMinutes > 0) " (+${conn.delayMinutes} Min)" else " (puenktlich)"
+                            val delayText = if (conn.delayMinutes > 0) " (+${conn.delayMinutes} Min)" else " (pünktlich)"
                             Text(
                                 text = "${conn.departureTime}$delayText",
                                 style = MaterialTheme.typography.titleMedium,
@@ -360,6 +453,13 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
+                        if (conn.walkInfo.isNotBlank()) {
+                            Text(
+                                text = conn.walkInfo,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
                         Text(text = "Richtung: ${conn.direction}")
                         Text(text = "Ab: ${conn.originStop}")
                         Text(text = "An: ${conn.destinationStop}")
@@ -370,76 +470,123 @@ fun BusFinderScreen(externalVoiceTrigger: Int) {
     }
 }
 
+fun buildEnrichedQuery(query: String, cityContext: String): String {
+    val cleanCity = cityContext.replace(Regex("^\\d{5}\\s+"), "").trim()
+    return if (
+        cityContext.isBlank() ||
+        query.contains(cityContext, ignoreCase = true) ||
+        (cleanCity.isNotBlank() && query.contains(cleanCity, ignoreCase = true)) ||
+        query.any { it.isDigit() && query.length >= 5 }
+    ) {
+        query
+    } else {
+        "$query, $cityContext"
+    }
+}
+
+@Suppress("DEPRECATION")
+suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double): String? =
+    withContext(Dispatchers.IO) {
+        try {
+            val geocoder = Geocoder(context, Locale.GERMANY)
+            val list = geocoder.getFromLocation(lat, lon, 1)
+            val addr = list?.firstOrNull()
+            addr?.locality ?: addr?.subAdminArea
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+suspend fun lookupCityCoordinates(cityQuery: String): CityOption? = withContext(Dispatchers.IO) {
+    try {
+        val url = "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(cityQuery, "UTF-8")}"
+        val arr = JSONArray(httpGet(url))
+        if (arr.length() == 0) return@withContext null
+        val obj = arr.getJSONObject(0)
+        val name = obj.optString("name", cityQuery)
+        val lat = obj.getDouble("lat")
+        val lon = obj.getDouble("lon")
+        CityOption(name = name, lat = lat, lon = lon)
+    } catch (e: Exception) {
+        null
+    }
+}
+
 suspend fun fetchConnections(
     fromLat: Double,
     fromLon: Double,
-    query: String
-): List<BusConnection> = withContext(Dispatchers.IO) {
-    val enrichedQuery = if (query.contains("lippstadt", ignoreCase = true) || query.contains("59555")) {
-        query
-    } else {
-        "$query, 59555 Lippstadt"
-    }
+    query: String,
+    cityContext: String
+): List<TransitConnection> = withContext(Dispatchers.IO) {
+    val enrichedQuery = buildEnrichedQuery(query, cityContext)
     val encodedQuery = URLEncoder.encode(enrichedQuery, "UTF-8")
 
-    val apiHost = "v6.db.transport.rest"
-    val locUrl = "https://$apiHost/locations?query=$encodedQuery&results=1&stops=true&addresses=true&poi=true"
-    val locArray = JSONArray(httpGet(locUrl))
-    if (locArray.length() == 0) return@withContext emptyList()
+    val geoUrl = "https://api.transitous.org/api/v1/geocode?text=$encodedQuery&place=$fromLat,$fromLon"
+    val geoArray = JSONArray(httpGet(geoUrl))
+    if (geoArray.length() == 0) return@withContext emptyList()
 
-    val destObj = locArray.getJSONObject(0)
-    val destLat: Double
-    val destLon: Double
+    val destObj = geoArray.getJSONObject(0)
+    val destLat = destObj.getDouble("lat")
+    val destLon = destObj.getDouble("lon")
     val destName = destObj.optString("name", enrichedQuery)
 
-    if (destObj.has("location")) {
-        val loc = destObj.getJSONObject("location")
-        destLat = loc.getDouble("latitude")
-        destLon = loc.getDouble("longitude")
-    } else {
-        destLat = destObj.getDouble("latitude")
-        destLon = destObj.getDouble("longitude")
-    }
+    val planUrl = "https://api.transitous.org/api/v1/plan" +
+            "?fromPlace=$fromLat,$fromLon" +
+            "&toPlace=$destLat,$destLon" +
+            "&numItineraries=5"
 
-    val journeyUrl = "https://$apiHost/journeys" +
-            "?from.latitude=$fromLat&from.longitude=$fromLon&from.address=Mein+Standort" +
-            "&to.latitude=$destLat&to.longitude=$destLon&to.address=${URLEncoder.encode(destName, "UTF-8")}" +
-            "&results=5&nationalExpress=false&national=false&regionalExp=false&regional=false&suburban=false&ferry=false&subway=false&tram=false&bus=true"
+    val root = JSONObject(httpGet(planUrl))
+    val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
+    val resultList = mutableListOf<TransitConnection>()
 
-    val root = JSONObject(httpGet(journeyUrl))
-    val journeys = root.optJSONArray("journeys") ?: return@withContext emptyList()
-    val resultList = mutableListOf<BusConnection>()
-
-    for (i in 0 until journeys.length()) {
-        val journey = journeys.getJSONObject(i)
-        val legs = journey.getJSONArray("legs")
+    for (i in 0 until itineraries.length()) {
+        val itinerary = itineraries.getJSONObject(i)
+        val legs = itinerary.getJSONArray("legs")
+        var initialWalkNote = ""
 
         for (j in 0 until legs.length()) {
             val leg = legs.getJSONObject(j)
-            if (leg.optBoolean("walking", false)) continue
+            val mode = leg.optString("mode", "")
 
-            val lineObj = leg.optJSONObject("line") ?: continue
-            val lineName = lineObj.optString("name", "Bus")
-            val direction = leg.optString("direction", destName)
-            val originName = leg.optJSONObject("origin")?.optString("name") ?: "Haltestelle"
-            val arrivalStopName = leg.optJSONObject("destination")?.optString("name") ?: destName
+            if (mode.equals("WALK", ignoreCase = true)) {
+                val durationSec = leg.optInt("duration", 0)
+                val dist = leg.optDouble("distance", 0.0).toInt()
+                if (j == 0 && durationSec > 60) {
+                    val walkMins = maxOf(1, durationSec / 60)
+                    initialWalkNote = "Fußweg zur Haltestelle: ca. $walkMins Min. ($dist m)"
+                }
+                continue
+            }
 
-            val depStr = leg.optString("departure", leg.optString("plannedDeparture", ""))
-            val formattedTime = if (depStr.length >= 16 && depStr.contains("T")) {
-                depStr.substringAfter("T").take(5)
+            val routeShort = leg.optString("routeShortName", "")
+            val displayName = if (routeShort.isNotBlank()) {
+                "$mode $routeShort"
+            } else {
+                leg.optString("routeLongName", mode.ifBlank { "ÖPNV" })
+            }
+            val headsign = leg.optString("headsign", destName)
+            val originName = leg.optJSONObject("from")?.optString("name") ?: "Haltestelle"
+            val arrivalStopName = leg.optJSONObject("to")?.optString("name") ?: destName
+
+            val startTimeStr = leg.optString("startTime", "")
+            val scheduledStartStr = leg.optString("scheduledStartTime", startTimeStr)
+            val formattedTime = if (startTimeStr.length >= 16 && startTimeStr.contains("T")) {
+                startTimeStr.substringAfter("T").take(5)
             } else {
                 SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
             }
-            val delaySec = leg.optInt("departureDelay", 0)
+
+            val delayMins = calculateDelayMinutes(scheduledStartStr, startTimeStr)
 
             resultList.add(
-                BusConnection(
-                    line = lineName,
-                    direction = direction,
+                TransitConnection(
+                    line = displayName,
+                    direction = headsign,
                     departureTime = formattedTime,
-                    delayMinutes = delaySec / 60,
+                    delayMinutes = delayMins,
                     originStop = originName,
-                    destinationStop = arrivalStopName
+                    destinationStop = arrivalStopName,
+                    walkInfo = initialWalkNote
                 )
             )
             break
@@ -448,12 +595,26 @@ suspend fun fetchConnections(
     resultList
 }
 
+private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int {
+    return try {
+        if (scheduledIso.isBlank() || actualIso.isBlank() || scheduledIso == actualIso) return 0
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val t1 = fmt.parse(scheduledIso.take(19))?.time ?: return 0
+        val t2 = fmt.parse(actualIso.take(19))?.time ?: return 0
+        maxOf(0, ((t2 - t1) / 60000L).toInt())
+    } catch (_: Exception) {
+        0
+    }
+}
+
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "LippstadtBusApp/1.2")
-    conn.connectTimeout = 10000
-    conn.readTimeout = 10000
+    conn.setRequestProperty("User-Agent", "OeffiFinderAndroid/2.3 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.connectTimeout = 12000
+    conn.readTimeout = 12000
+    if (conn.responseCode !in 200..299) {
+        throw IllegalStateException("HTTP ${conn.responseCode}")
+    }
     return conn.inputStream.bufferedReader().use { it.readText() }
 }
-
