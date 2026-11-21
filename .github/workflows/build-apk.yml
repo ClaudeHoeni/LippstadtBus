@@ -2,44 +2,49 @@ name: Build Oeffi Finder APK
 on:
   push:
     branches: [ "main" ]
-  release:
-    types: [ created ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
+concurrency:
+  group: oeffi-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Ensure Fixed Keystore Exists
-        run: |
-          if [ ! -f app/oeffi-release.jks ]; then
-            keytool -genkeypair -v -keystore app/oeffi-release.jks -alias oeffi -keyalg RSA -keysize 2048 -validity 10000 -storepass oeffi1234 -keypass oeffi1234 -dname "CN=OeffiFinder, OU=Private, O=Private, L=Berlin, S=Berlin, C=DE"
-          fi
+      - name: Check existing signing key
+        run: test -s app/oeffi-release.jks
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Build Signed Debug APK
+      - name: Test, lint and build APK
         env:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
-        run: gradle assembleDebug
+        run: gradle testDebugUnitTest lintDebug assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: OeffiFinder-APK
           path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Delete old v-latest release if exists
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete v-latest --yes --cleanup-tag
-      - name: Publish Fresh Auto-Update Release
+      - name: Update stable release tag
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          git tag -f v-latest "$GITHUB_SHA"
+          git push origin refs/tags/v-latest --force
+      - name: Publish tested auto-update release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v-latest
           name: Aktuelle Version (${{ github.run_number }})
-          body: Automatischer Build Nr. ${{ github.run_number }}
+          body: "Umgebungssuche, Haltestellenauswahl, Zeitangaben und Wecker korrigiert. Automatischer Build Nr. ${{ github.run_number }}."
           files: app/build/outputs/apk/debug/app-debug.apk
+          fail_on_unmatched_files: true
