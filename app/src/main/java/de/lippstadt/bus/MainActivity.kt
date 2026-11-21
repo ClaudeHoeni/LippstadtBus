@@ -47,19 +47,29 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+
+data class PoiCategory(
+    val label: String,
+    val overpassFilter: String
+)
 
 data class ParsedVoiceQuery(
     val origin: String?,
     val destination: String,
     val preferredMode: String?,
-    val modeDisplayName: String?
+    val modeDisplayName: String?,
+    val poiCategory: PoiCategory?,
+    val poiAnchorPlace: String?
 )
 
 data class GeoCandidate(
     val name: String,
     val areaLabel: String,
     val lat: Double,
-    val lon: Double
+    val lon: Double,
+    val isStop: Boolean = false,
+    val isStreet: Boolean = false
 ) {
     val fullDisplay: String
         get() = if (areaLabel.isNotBlank() && !name.contains(areaLabel, ignoreCase = true)) {
@@ -68,19 +78,6 @@ data class GeoCandidate(
             name
         }
 }
-
-data class PendingDisambiguation(
-    val isOrigin: Boolean,
-    val queryText: String,
-    val candidates: List<GeoCandidate>,
-    val baseLat: Double,
-    val baseLon: Double,
-    val cityContext: String,
-    val resolvedOrigin: GeoCandidate?,
-    val destQuery: String,
-    val preferredMode: String?,
-    val modeDisplayName: String?
-)
 
 data class RouteLegInfo(
     val isWalk: Boolean,
@@ -147,8 +144,29 @@ class MainActivity : ComponentActivity() {
 
 private fun cleanPlaceArticle(place: String): String {
     return place
-        .replace(Regex("^(dem|der|den|das|die)\\s+", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("^(dem|der|den|das|die|einem|einer|einen)\\s+", RegexOption.IGNORE_CASE), "")
         .trim()
+}
+
+private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
+    val map = listOf(
+        Regex("\\b(bäckerei|baeckerei|bäcker|baecker|brötchen|broetchen)\\b") to PoiCategory("Bäckerei", """["shop"="bakery"]"""),
+        Regex("\\b(pommesbude|pommes|imbiss|currywurst|fritten|snack)\\b") to PoiCategory("Imbiss / Pommesbude", """["amenity"="fast_food"]"""),
+        Regex("\\b(döner|doener|kebab)\\b") to PoiCategory("Döner / Imbiss", """["amenity"="fast_food"]"""),
+        Regex("\\b(apotheke)\\b") to PoiCategory("Apotheke", """["amenity"="pharmacy"]"""),
+        Regex("\\b(supermarkt|edeka|rewe|aldi|lidl|penny|netto|kaufland|einkaufen)\\b") to PoiCategory("Supermarkt", """["shop"="supermarket"]"""),
+        Regex("\\b(geldautomat|bankautomat|sparkasse|volksbank|bank)\\b") to PoiCategory("Geldautomat / Bank", """["amenity"~"atm|bank"]"""),
+        Regex("\\b(café|cafe|kaffee)\\b") to PoiCategory("Café", """["amenity"="cafe"]"""),
+        Regex("\\b(restaurant|essen)\\b") to PoiCategory("Restaurant", """["amenity"="restaurant"]"""),
+        Regex("\\b(toilette|wc|klo)\\b") to PoiCategory("Toilette / WC", """["amenity"="toilets"]"""),
+        Regex("\\b(tankstelle|tanken)\\b") to PoiCategory("Tankstelle", """["amenity"="fuel"]"""),
+        Regex("\\b(paketshop|post|dhl|packstation)\\b") to PoiCategory("Post / Packstation", """["amenity"~"post_office|parcel_locker"]""")
+    )
+    for ((regex, cat) in map) {
+        val m = regex.find(lowerText)
+        if (m != null) return cat to m.value
+    }
+    return null
 }
 
 fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
@@ -164,6 +182,28 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         else -> null to null
     }
 
+    val poiHit = detectPoiCategory(lower)
+    if (poiHit != null) {
+        val (category, matchedKeyword) = poiHit
+        val afterKeyword = lower.substringAfter(matchedKeyword).trim()
+        val anchorMatch = Regex("^(?:am|an\\s+der|an\\s+dem|beim|bei\\s+der|bei\\s+dem|in|nahe)\\s+(.+)$", RegexOption.IGNORE_CASE)
+            .find(afterKeyword)
+        val anchorRaw = anchorMatch?.groupValues?.get(1)?.trim()
+        val isNearbyPhrase = anchorRaw == null ||
+                Regex("^(der\\s+nähe|der\\s+naehe|nähe|naehe|hier|mir|umgebung)$", RegexOption.IGNORE_CASE)
+                    .matches(anchorRaw)
+
+        val anchorPlace = if (isNearbyPhrase) null else cleanPlaceArticle(anchorRaw ?: "")
+        return ParsedVoiceQuery(
+            origin = null,
+            destination = if (anchorPlace != null) "${category.label} am $anchorPlace" else "${category.label} in der Nähe",
+            preferredMode = modeCode,
+            modeDisplayName = modeLabel,
+            poiCategory = category,
+            poiAnchorPlace = anchorPlace?.ifBlank { null }
+        )
+    }
+
     val fromToRegex = Regex(
         "(?:von|ab)\\s+(.+?)\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
         RegexOption.IGNORE_CASE
@@ -177,7 +217,9 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
                 origin = rawOrigin,
                 destination = rawDest,
                 preferredMode = modeCode,
-                modeDisplayName = modeLabel
+                modeDisplayName = modeLabel,
+                poiCategory = null,
+                poiAnchorPlace = null
             )
         }
     }
@@ -208,7 +250,9 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
         origin = null,
         destination = extractedDest,
         preferredMode = modeCode,
-        modeDisplayName = modeLabel
+        modeDisplayName = modeLabel,
+        poiCategory = null,
+        poiAnchorPlace = null
     )
 }
 
@@ -286,7 +330,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     var detectedGpsCity by remember { mutableStateOf<String?>(null) }
 
     var destinationInput by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("Bereit. Ziel eingeben oder sprechen.") }
+    var statusMessage by remember { mutableStateOf("Bereit. Haltestelle, Ziel oder Bäckerei/Imbiss eingeben.") }
     var isLoading by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
     var isSpeaking by remember { mutableStateOf(false) }
@@ -294,7 +338,14 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
     var selectedConnectionIndex by remember { mutableStateOf(0) }
     var alternativesDropdownExpanded by remember { mutableStateOf(false) }
-    var disambiguation by remember { mutableStateOf<PendingDisambiguation?>(null) }
+
+    // Alternative Orte/Haltestellen (als sauberes Dropdown statt Popup-Dialog!)
+    var placeCandidates by remember { mutableStateOf<List<GeoCandidate>>(emptyList()) }
+    var selectedPlaceIndex by remember { mutableStateOf(0) }
+    var placesDropdownExpanded by remember { mutableStateOf(false) }
+    var activeStartCoords by remember { mutableStateOf<Pair<Double, Double>?>(null) }
+    var activePreferredMode by remember { mutableStateOf<String?>(null) }
+    var activeModeDisplay by remember { mutableStateOf<String?>(null) }
 
     var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var isUpdating by remember { mutableStateOf(false) }
@@ -364,105 +415,30 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         detectCurrentLocation()
     }
 
-    suspend fun continueRoutingWithCandidates(
-        baseLat: Double,
-        baseLon: Double,
-        cityContextName: String,
-        originQuery: String?,
-        preselectedOrigin: GeoCandidate?,
-        destQuery: String,
-        preselectedDest: GeoCandidate?,
+    suspend fun loadRouteForPlace(
+        startLat: Double,
+        startLon: Double,
+        dest: GeoCandidate,
         preferredMode: String?,
-        modeDisplayName: String?
+        modeDisplay: String?
     ) {
-        val modeHint = if (modeDisplayName != null) " ($modeDisplayName)" else ""
-        val areaHint = if (cityContextName.isNotBlank()) " in $cityContextName" else ""
-
-        // 1. Startpunkt prüfen (falls explizit "von X nach Y" angegeben)
-        val resolvedOrigin: GeoCandidate? = if (preselectedOrigin != null) {
-            preselectedOrigin
-        } else if (!originQuery.isNullOrBlank()) {
-            val originCandidates = searchGeoCandidates(originQuery, baseLat, baseLon, cityContextName)
-            when {
-                originCandidates.isEmpty() -> {
-                    statusMessage = "Startort \"$originQuery\" nicht gefunden."
-                    return
-                }
-                originCandidates.size > 1 -> {
-                    disambiguation = PendingDisambiguation(
-                        isOrigin = true,
-                        queryText = originQuery,
-                        candidates = originCandidates,
-                        baseLat = baseLat,
-                        baseLon = baseLon,
-                        cityContext = cityContextName,
-                        resolvedOrigin = null,
-                        destQuery = destQuery,
-                        preferredMode = preferredMode,
-                        modeDisplayName = modeDisplayName
-                    )
-                    statusMessage = "Mehrere Orte für \"$originQuery\" gefunden – bitte auswählen:"
-                    return
-                }
-                else -> originCandidates.first()
-            }
-        } else {
-            null
-        }
-
-        // 2. Zielpunkt prüfen
-        val startLat = resolvedOrigin?.lat ?: baseLat
-        val startLon = resolvedOrigin?.lon ?: baseLon
-
-        val resolvedDest: GeoCandidate = if (preselectedDest != null) {
-            preselectedDest
-        } else {
-            val destCandidates = searchGeoCandidates(destQuery, startLat, startLon, cityContextName)
-            when {
-                destCandidates.isEmpty() -> {
-                    statusMessage = "Ziel \"$destQuery\" nicht gefunden."
-                    return
-                }
-                destCandidates.size > 1 -> {
-                    disambiguation = PendingDisambiguation(
-                        isOrigin = false,
-                        queryText = destQuery,
-                        candidates = destCandidates,
-                        baseLat = baseLat,
-                        baseLon = baseLon,
-                        cityContext = cityContextName,
-                        resolvedOrigin = resolvedOrigin,
-                        destQuery = destQuery,
-                        preferredMode = preferredMode,
-                        modeDisplayName = modeDisplayName
-                    )
-                    statusMessage = "Mehrere Orte für \"$destQuery\" gefunden – bitte auswählen:"
-                    return
-                }
-                else -> destCandidates.first()
-            }
-        }
-
-        val routeLabel = if (resolvedOrigin != null) {
-            "ab \"${resolvedOrigin.fullDisplay}\" nach \"${resolvedDest.fullDisplay}\""
-        } else {
-            "nach \"${resolvedDest.fullDisplay}\""
-        }
-        statusMessage = "Suche$modeHint $routeLabel..."
-
+        val modeHint = if (modeDisplay != null) " ($modeDisplay)" else ""
+        statusMessage = "Suche$modeHint → ${dest.name}..."
         val results = fetchConnectionsForCoords(
             startLat = startLat,
             startLon = startLon,
-            destLat = resolvedDest.lat,
-            destLon = resolvedDest.lon,
-            destName = resolvedDest.name,
+            destLat = dest.lat,
+            destLon = dest.lon,
+            destName = dest.name,
             preferredMode = preferredMode
         )
         connections = results
+        selectedConnectionIndex = 0
+        alternativesDropdownExpanded = false
         statusMessage = if (results.isEmpty()) {
-            "Keine passenden Verbindungen$modeHint gefunden."
+            "Keine Verbindung$modeHint nach ${dest.name} gefunden."
         } else {
-            "Beste Verbindung$modeHint$areaHint:"
+            "Ziel: ${dest.fullDisplay}"
         }
     }
 
@@ -489,9 +465,13 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         scope.launch {
             isLoading = true
             connections = emptyList()
+            placeCandidates = emptyList()
+            selectedPlaceIndex = 0
             selectedConnectionIndex = 0
             alternativesDropdownExpanded = false
-            disambiguation = null
+            placesDropdownExpanded = false
+            activePreferredMode = parsed.preferredMode
+            activeModeDisplay = parsed.modeDisplayName
 
             try {
                 statusMessage = "Ermittle aktuellen GPS-Standort..."
@@ -503,16 +483,68 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 }
 
                 val (baseLat, baseLon, cityContextName) = locData
-                continueRoutingWithCandidates(
-                    baseLat = baseLat,
-                    baseLon = baseLon,
-                    cityContextName = cityContextName,
-                    originQuery = parsed.origin,
-                    preselectedOrigin = null,
-                    destQuery = parsed.destination,
-                    preselectedDest = null,
+
+                // 1. Startpunkt bestimmen (entweder explizit "von X nach Y" oder aktuelles GPS)
+                var startLat = baseLat
+                var startLon = baseLon
+                if (!parsed.origin.isNullOrBlank()) {
+                    val originCands = searchTransitStopsAndPlaces(parsed.origin, baseLat, baseLon, cityContextName)
+                    val bestOrigin = originCands.firstOrNull()
+                    if (bestOrigin == null) {
+                        statusMessage = "Startort \"${parsed.origin}\" nicht gefunden."
+                        isLoading = false
+                        return@launch
+                    }
+                    startLat = bestOrigin.lat
+                    startLon = bestOrigin.lon
+                }
+                activeStartCoords = startLat to startLon
+
+                // 2. Zielkandidaten ermitteln (POIs oder ÖPNV-Haltestellen/Orte)
+                val candidates: List<GeoCandidate> = if (parsed.poiCategory != null) {
+                    var centerLat = baseLat
+                    var centerLon = baseLon
+                    var anchorLabel = "deiner Nähe"
+
+                    if (!parsed.poiAnchorPlace.isNullOrBlank()) {
+                        val anchorCands = searchTransitStopsAndPlaces(parsed.poiAnchorPlace, baseLat, baseLon, cityContextName)
+                        val anchor = anchorCands.firstOrNull()
+                        if (anchor == null) {
+                            statusMessage = "Ort \"${parsed.poiAnchorPlace}\" nicht gefunden."
+                            isLoading = false
+                            return@launch
+                        }
+                        centerLat = anchor.lat
+                        centerLon = anchor.lon
+                        anchorLabel = anchor.name
+                    }
+
+                    statusMessage = "Suche ${parsed.poiCategory.label} bei $anchorLabel..."
+                    searchNearbyPoisOverpass(
+                        centerLat = centerLat,
+                        centerLon = centerLon,
+                        category = parsed.poiCategory,
+                        radiusMeters = if (parsed.poiAnchorPlace != null) 1000 else 2500
+                    )
+                } else {
+                    searchTransitStopsAndPlaces(parsed.destination, startLat, startLon, cityContextName)
+                }
+
+                if (candidates.isEmpty()) {
+                    statusMessage = "Ziel \"${parsed.destination}\" nicht gefunden."
+                    isLoading = false
+                    return@launch
+                }
+
+                // Immer direkt den besten Treffer (ÖPNV-Haltestelle zuerst!) nehmen, Rest ins Dropdown!
+                placeCandidates = candidates
+                selectedPlaceIndex = 0
+                loadRouteForPlace(
+                    startLat = startLat,
+                    startLon = startLon,
+                    dest = candidates.first(),
                     preferredMode = parsed.preferredMode,
-                    modeDisplayName = parsed.modeDisplayName
+                    modeDisplay = parsed.modeDisplayName
                 )
             } catch (e: Exception) {
                 statusMessage = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
@@ -544,7 +576,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "z. B. Wie komme ich mit dem nächsten Bus nach...")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "z. B. Rathaus Steglitz oder nächste Bäckerei")
         }
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
@@ -640,89 +672,13 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
-    // RÜCKFRAGE-DIALOG BEI MEHRDEUTIGEN ORTEN (z. B. Voltastraße Reinickendorf vs. Siemensstadt)
-    disambiguation?.let { pending ->
-        AlertDialog(
-            onDismissRequest = { disambiguation = null },
-            title = {
-                Text(
-                    text = if (pending.isOrigin) {
-                        "Welcher Startort ist gemeint?"
-                    } else {
-                        "Welches Ziel ist gemeint?"
-                    }
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "Für „${pending.queryText}“ gibt es mehrere Orte:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    pending.candidates.forEach { candidate ->
-                        OutlinedButton(
-                            onClick = {
-                                disambiguation = null
-                                scope.launch {
-                                    isLoading = true
-                                    try {
-                                        if (pending.isOrigin) {
-                                            continueRoutingWithCandidates(
-                                                baseLat = pending.baseLat,
-                                                baseLon = pending.baseLon,
-                                                cityContextName = pending.cityContext,
-                                                originQuery = pending.queryText,
-                                                preselectedOrigin = candidate,
-                                                destQuery = pending.destQuery,
-                                                preselectedDest = null,
-                                                preferredMode = pending.preferredMode,
-                                                modeDisplayName = pending.modeDisplayName
-                                            )
-                                        } else {
-                                            continueRoutingWithCandidates(
-                                                baseLat = pending.baseLat,
-                                                baseLon = pending.baseLon,
-                                                cityContextName = pending.cityContext,
-                                                originQuery = null,
-                                                preselectedOrigin = pending.resolvedOrigin,
-                                                destQuery = pending.destQuery,
-                                                preselectedDest = candidate,
-                                                preferredMode = pending.preferredMode,
-                                                modeDisplayName = pending.modeDisplayName
-                                            )
-                                        }
-                                    } catch (e: Exception) {
-                                        statusMessage = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = candidate.fullDisplay,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { disambiguation = null }) {
-                    Text("Abbrechen")
-                }
-            }
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(14.dp)
     ) {
+        // KOPFZEILE
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -746,6 +702,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
+        // UPDATE-BUTTON NUR WENN WIRKLICH NEUERES RELEASE ONLINE
         availableUpdate?.let { upd ->
             Spacer(modifier = Modifier.height(6.dp))
             Button(
@@ -771,6 +728,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // SUCHZEILE + MIKROFON
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -778,8 +736,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             OutlinedTextField(
                 value = destinationInput,
                 onValueChange = { destinationInput = it },
-                label = { Text("Ziel oder \"von ... nach ...\"") },
-                placeholder = { Text("z. B. mit dem Bus zum Bahnhof") },
+                label = { Text("Haltestelle, Ziel oder Bäckerei...") },
+                placeholder = { Text("z. B. Rathaus Steglitz") },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -812,6 +770,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         Spacer(modifier = Modifier.height(8.dp))
 
+        // HAUPTERGEBNIS: BESTE VERBINDUNG DIE JETZT ABFÄHRT
         val activeConn = connections.getOrNull(selectedConnectionIndex)
         if (activeConn != null) {
             Card(
@@ -937,8 +896,9 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
+        // DROPDOWN 1: ALTERNATIVEN (SPÄTERE / ANDERE VERBINDUNGEN)
         if (connections.size > 1) {
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = { alternativesDropdownExpanded = !alternativesDropdownExpanded },
@@ -966,7 +926,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     connections.forEachIndexed { index, conn ->
                         val isSelected = index == selectedConnectionIndex
                         val delayStr = if (conn.firstDelayMinutes > 0) " (+${conn.firstDelayMinutes}')" else ""
-                        val bestTag = if (index == 0) " · Beste Verbindung" else ""
+                        val bestTag = if (index == 0) " · Beste" else ""
                         val transferTag = if (conn.transfersCount == 0) "Direkt" else "${conn.transfersCount}× Umstieg"
                         DropdownMenuItem(
                             text = {
@@ -976,7 +936,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold
                                     )
                                     Text(
-                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min., $transferTag) · Ab ${conn.legs.firstOrNull { !it.isWalk && !it.isTransfer }?.fromStop ?: ""}",
+                                        text = "An ${conn.finalArrivalTime} Uhr (${conn.totalDurationMinutes} Min., $transferTag)",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -989,10 +949,69 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                 }
                                 selectedConnectionIndex = index
                                 alternativesDropdownExpanded = false
-                                statusMessage = if (index == 0) {
-                                    "Beste Verbindung:"
-                                } else {
-                                    "Alternative (${conn.firstDepartureTime} Uhr):"
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        // DROPDOWN 2: ANDERE ORTE / HALTESTELLEN (ALLES ANDERE SAUBER EINGEKLAPPT)
+        if (placeCandidates.size > 1) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { placesDropdownExpanded = !placesDropdownExpanded },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Andere Orte / Haltestellen (${placeCandidates.size - 1} weitere)",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(text = if (placesDropdownExpanded) "▲" else "▼")
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = placesDropdownExpanded,
+                    onDismissRequest = { placesDropdownExpanded = false },
+                    modifier = Modifier.fillMaxWidth(0.92f)
+                ) {
+                    placeCandidates.forEachIndexed { idx, candidate ->
+                        val isCurrent = idx == selectedPlaceIndex
+                        val typePrefix = if (candidate.isStop) "🚏 " else ""
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "$typePrefix${candidate.fullDisplay}",
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            onClick = {
+                                placesDropdownExpanded = false
+                                selectedPlaceIndex = idx
+                                val startCoords = activeStartCoords
+                                if (startCoords != null) {
+                                    scope.launch {
+                                        isLoading = true
+                                        try {
+                                            loadRouteForPlace(
+                                                startLat = startCoords.first,
+                                                startLon = startCoords.second,
+                                                dest = candidate,
+                                                preferredMode = activePreferredMode,
+                                                modeDisplay = activeModeDisplay
+                                            )
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
                                 }
                             }
                         )
@@ -1034,12 +1053,63 @@ private fun distanceMetersBetween(lat1: Double, lon1: Double, lat2: Double, lon2
     return results[0]
 }
 
+suspend fun searchNearbyPoisOverpass(
+    centerLat: Double,
+    centerLon: Double,
+    category: PoiCategory,
+    radiusMeters: Int = 1500
+): List<GeoCandidate> = withContext(Dispatchers.IO) {
+    try {
+        val query = """
+            [out:json][timeout:10];
+            (
+              node${category.overpassFilter}(around:$radiusMeters,$centerLat,$centerLon);
+              way${category.overpassFilter}(around:$radiusMeters,$centerLat,$centerLon);
+            );
+            out center 15;
+        """.trimIndent()
+        val url = "https://overpass-api.de/api/interpreter?data=${URLEncoder.encode(query, "UTF-8")}"
+        val root = JSONObject(httpGet(url))
+        val elements = root.optJSONArray("elements") ?: return@withContext emptyList()
+
+        val found = mutableListOf<GeoCandidate>()
+        for (i in 0 until elements.length()) {
+            val el = elements.getJSONObject(i)
+            val tags = el.optJSONObject("tags") ?: continue
+            val lat = if (el.has("lat")) el.getDouble("lat") else el.optJSONObject("center")?.optDouble("lat", Double.NaN) ?: Double.NaN
+            val lon = if (el.has("lon")) el.getDouble("lon") else el.optJSONObject("center")?.optDouble("lon", Double.NaN) ?: Double.NaN
+            if (lat.isNaN() || lon.isNaN()) continue
+
+            val rawName = tags.optString("name", "").trim()
+            val displayName = if (rawName.isNotBlank()) rawName else category.label
+            val street = tags.optString("addr:street", "").trim()
+            val houseNo = tags.optString("addr:housenumber", "").trim()
+            val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
+            val addrPart = listOf(street, houseNo).filter { it.isNotBlank() }.joinToString(" ")
+            val label = if (addrPart.isNotBlank()) "$addrPart · ca. $dist m" else "ca. $dist m entfernt"
+
+            found.add(
+                GeoCandidate(
+                    name = displayName,
+                    areaLabel = label,
+                    lat = lat,
+                    lon = lon,
+                    isStop = false,
+                    isStreet = false
+                )
+            )
+        }
+        found.sortedBy { distanceMetersBetween(centerLat, centerLon, it.lat, it.lon) }.take(6)
+    } catch (_: Exception) {
+        emptyList()
+    }
+}
+
 /**
- * Sucht passende Orte/Straßen im Umkreis (bis 50 km, z. B. verschiedene Berliner Ortsteile oder Potsdam)
- * und fasst direkt benachbarte Haltestellen/Hausnummern (< 400 m) zusammen, damit nur echte
- * verschiedene Orte (wie Voltastraße Reinickendorf vs. Siemensstadt) zur Auswahl gestellt werden.
+ * Priorisiert IMMER ÖPNV-Haltestellen (type == "STOP") als erstes Hauptergebnis.
+ * Alle weiteren passenden Straßen oder Nachbarorte landen dahinter für das Dropdown-Menü.
  */
-suspend fun searchGeoCandidates(
+suspend fun searchTransitStopsAndPlaces(
     rawQuery: String,
     biasLat: Double,
     biasLon: Double,
@@ -1064,11 +1134,11 @@ suspend fun searchGeoCandidates(
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
                 val name = obj.optString("name", cleanQuery).trim()
+                val type = obj.optString("type", "").uppercase(Locale.US)
                 val lat = obj.optDouble("lat", Double.NaN)
                 val lon = obj.optDouble("lon", Double.NaN)
                 if (lat.isNaN() || lon.isNaN()) continue
 
-                // Strikt nur Treffer im Umkreis von 45 km (z. B. ganz Berlin + Potsdam/Umland, niemals Düsseldorf)
                 val distFromUser = distanceMetersBetween(biasLat, biasLon, lat, lon)
                 if (distFromUser > 45_000f) continue
 
@@ -1089,40 +1159,39 @@ suspend fun searchGeoCandidates(
                     append(areaParts.take(3).joinToString(", "))
                 }.trim()
 
+                val isStop = type == "STOP"
+                val isStreet = type == "ADDRESS"
                 rawCandidates.add(
                     GeoCandidate(
                         name = name,
                         areaLabel = areaText,
                         lat = lat,
-                        lon = lon
+                        lon = lon,
+                        isStop = isStop,
+                        isStreet = isStreet
                     )
                 )
             }
         }
 
-        // Nach Entfernung sortieren (nächstgelegene zuerst) und Duplikate (< 500 m) zusammenfassen
-        val sortedByDist = rawCandidates.sortedBy { distanceMetersBetween(biasLat, biasLon, it.lat, it.lon) }
-        val distinctCandidates = mutableListOf<GeoCandidate>()
-        for (cand in sortedByDist) {
-            val isDuplicate = distinctCandidates.any { existing ->
-                distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 500f
+        // Sortierung: 1. ÖPNV-Haltestellen (STOP), 2. Straßen (ADDRESS), 3. Sonstige; innerhalb nach Entfernung
+        val sorted = rawCandidates.sortedWith(
+            compareByDescending<GeoCandidate> { it.isStop }
+                .thenByDescending { it.isStreet }
+                .thenBy { distanceMetersBetween(biasLat, biasLon, it.lat, it.lon) }
+        )
+
+        val distinct = mutableListOf<GeoCandidate>()
+        for (cand in sorted) {
+            val isDuplicate = distinct.any { existing ->
+                distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 550f
             }
             if (!isDuplicate) {
-                distinctCandidates.add(cand)
+                distinct.add(cand)
             }
-            if (distinctCandidates.size >= 5) break
+            if (distinct.size >= 6) break
         }
-
-        if (distinctCandidates.size > 1 && cityContext.isNotBlank() &&
-            cleanQuery.contains(cityContext, ignoreCase = true)
-        ) {
-            val exactInCity = distinctCandidates.filter {
-                it.fullDisplay.contains(cityContext, ignoreCase = true)
-            }
-            if (exactInCity.size == 1) return@withContext exactInCity
-        }
-
-        distinctCandidates
+        distinct
     } catch (_: Exception) {
         emptyList()
     }
@@ -1146,7 +1215,7 @@ suspend fun fetchConnectionsForCoords(
     }
 
     val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-        timeZone = java.util.TimeZone.getTimeZone("UTC")
+        timeZone = TimeZone.getTimeZone("UTC")
     }
     val nowIsoEncoded = URLEncoder.encode(isoFmt.format(Date()), "UTF-8")
 
@@ -1371,7 +1440,7 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.9 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/4.1 (https://github.com/ClaudeHoeni/LippstadtBus)")
     conn.connectTimeout = 12000
     conn.readTimeout = 12000
     if (conn.responseCode !in 200..299) {
