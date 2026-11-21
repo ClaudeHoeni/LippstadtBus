@@ -184,9 +184,6 @@ fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
     )
 }
 
-/**
- * Übersetzt englische API-Verkehrsmittelnamen konsequent in sauberes Deutsch.
- */
 fun formatGermanLineName(rawMode: String, routeShortName: String, routeLongName: String): String {
     val shortClean = routeShortName.trim()
     val germanType = when (rawMode.uppercase(Locale.US)) {
@@ -204,7 +201,6 @@ fun formatGermanLineName(rawMode: String, routeShortName: String, routeLongName:
         return routeLongName.ifBlank { germanType }
     }
 
-    // Doppelungen vermeiden (z. B. wenn shortClean schon "U7", "S1", "RE 1" oder "Bus C1" enthält)
     val upperShort = shortClean.uppercase(Locale.US)
     return when {
         germanType == "U-Bahn" && upperShort.startsWith("U") -> "U-Bahn $shortClean"
@@ -530,6 +526,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             .verticalScroll(rememberScrollState())
             .padding(14.dp)
     ) {
+        // KOPFZEILE: APP-NAME + REIN AUTOMATISCHER GPS-STANDORT
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -553,6 +550,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
+        // UPDATE-BUTTON NUR ANZEIGEN, WENN AUF GITHUB EINE ECHT NEUERE VERSION LIEGT
         availableUpdate?.let { upd ->
             Spacer(modifier = Modifier.height(6.dp))
             Button(
@@ -619,7 +617,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        // HAUPTBILDSCHIRM: AKTUELL BESTE VERBINDUNG DIE JETZT ABFÄHRT
+        // HAUPTBILDSCHIRM: BESTE VERBINDUNG DIE JETZT ABFÄHRT
         val activeConn = connections.getOrNull(selectedConnectionIndex)
         if (activeConn != null) {
             Card(
@@ -896,7 +894,6 @@ suspend fun fetchConnections(
     val destLon = resolvedDest.second
     val destName = resolvedDest.third
 
-    // Fernzüge (ICE/IC) ausschließen, damit für Stadt-/Regionalziele der echte Nahverkehr gewählt wird
     val modesParam = if (preferredMode != null) {
         "&transitModes=$preferredMode"
     } else {
@@ -912,7 +909,7 @@ suspend fun fetchConnections(
     val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
     val resultList = mutableListOf<TransitConnection>()
     val nowMillis = System.currentTimeMillis()
-    val minAllowedDeparture = nowMillis - 60 * 1000L // bereits abgefahrene Verbindungen ausfiltern
+    val minAllowedDeparture = nowMillis - 60 * 1000L
     val maxWindowMillis = nowMillis + 60 * 60 * 1000L
 
     for (i in 0 until itineraries.length()) {
@@ -1000,12 +997,10 @@ suspend fun fetchConnections(
 
         if (transitLineNames.isEmpty()) continue
 
-        // Verbindungen, die schon abgefahren sind, überspringen
         if (firstTransitDepartureMillis != null && firstTransitDepartureMillis < minAllowedDeparture) {
             continue
         }
 
-        // Umstiege explizit zwischen allen ÖPNV-Abschnitten einbauen
         val finalLegs = mutableListOf<RouteLegInfo>()
         var seenFirstTransit = false
         for (idx in rawParsedLegs.indices) {
@@ -1080,7 +1075,6 @@ suspend fun fetchConnections(
         )
     }
 
-    // Beste Verbindung = früheste Ankunft unter den aktuell abfahrenden Verbindungen, danach früheste Abfahrt
     resultList.sortedWith(compareBy<TransitConnection> { it.arrivalMillis }.thenBy { it.departureMillis })
 }
 
@@ -1128,7 +1122,7 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.6 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/3.7 (https://github.com/ClaudeHoeni/LippstadtBus)")
     conn.connectTimeout = 12000
     conn.readTimeout = 12000
     if (conn.responseCode !in 200..299) {
@@ -1146,6 +1140,7 @@ suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext
             ?: return@withContext null
         val remoteVersionCode = 100 + remoteRun
 
+        // Update-Button erscheint NUR, wenn remoteVersionCode echt größer als die installierte App ist
         if (remoteVersionCode <= BuildConfig.VERSION_CODE) return@withContext null
 
         val assets = obj.optJSONArray("assets") ?: return@withContext null
