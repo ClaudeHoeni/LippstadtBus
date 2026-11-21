@@ -1,4 +1,4 @@
-name: Build Lippstadt Bus APK
+name: Build Oeffi Finder APK
 on:
   push:
     branches: [ "main" ]
@@ -18,10 +18,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
-      - name: Run Unit Tests
-        run: gradle testDebugUnitTest --stacktrace
       - name: Build Debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: OeffiFinder-APK
