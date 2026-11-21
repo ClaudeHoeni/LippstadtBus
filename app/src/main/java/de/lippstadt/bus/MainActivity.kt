@@ -894,10 +894,13 @@ suspend fun fetchConnections(
     val destLon = resolvedDest.second
     val destName = resolvedDest.third
 
-    val modesParam = if (preferredMode != null) {
-        "&transitModes=$preferredMode"
-    } else {
-        "&transitModes=BUS,SUBWAY,SUBURBAN,TRAM,REGIONAL_RAIL,FERRY"
+    val modesParam = when (preferredMode) {
+        "BUS" -> "&transitModes=BUS"
+        "SUBWAY" -> "&transitModes=SUBWAY"
+        "SUBURBAN" -> "&transitModes=SUBURBAN,RAIL"
+        "TRAM" -> "&transitModes=TRAM"
+        "REGIONAL_RAIL" -> "&transitModes=REGIONAL_RAIL,RAIL"
+        else -> ""
     }
 
     val planUrl = "https://api.transitous.org/api/v1/plan" +
@@ -1051,9 +1054,7 @@ suspend fun fetchConnections(
             }
         }
 
-        if (firstTransitDepartureMillis != null && firstTransitDepartureMillis > maxWindowMillis && resultList.size >= 2) {
-            continue
-        }
+        // Zeitfenster offen lassen, damit abends/am Wochenende immer Treffer erscheinen
 
         val depMs = firstTransitDepartureMillis ?: nowMillis
         val arrMs = finalArrMillis ?: (depMs + totalDurSec * 1000L)
