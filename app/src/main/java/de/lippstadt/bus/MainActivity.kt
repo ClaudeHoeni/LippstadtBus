@@ -14,11 +14,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +39,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -43,20 +47,40 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class TransitConnection(
-    val line: String,
+data class RouteLegInfo(
+    val isWalk: Boolean,
+    val lineName: String,
     val direction: String,
-    val departureTime: String,
+    val fromStop: String,
+    val toStop: String,
+    val startTime: String,
+    val endTime: String,
     val delayMinutes: Int,
-    val originStop: String,
-    val destinationStop: String,
-    val walkInfo: String
+    val durationMinutes: Int,
+    val distanceMeters: Int
+)
+
+data class TransitConnection(
+    val summaryLines: String,
+    val firstLine: String,
+    val firstDirection: String,
+    val firstDepartureTime: String,
+    val finalArrivalTime: String,
+    val firstDelayMinutes: Int,
+    val totalDurationMinutes: Int,
+    val transfersCount: Int,
+    val legs: List<RouteLegInfo>
 )
 
 data class CityOption(
     val name: String,
     val lat: Double?,
     val lon: Double?
+)
+
+data class AppUpdateInfo(
+    val title: String,
+    val downloadUrl: String
 )
 
 class MainActivity : ComponentActivity() {
@@ -138,13 +162,14 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
 
     var showAddCityDialog by remember { mutableStateOf(false) }
+    var newCityInput by remember { mutableStateOf("") }
+
     var availableUpdate by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var isUpdating by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         availableUpdate = checkForGitHubUpdate(context)
     }
-    var newCityInput by remember { mutableStateOf("") }
 
     @SuppressLint("MissingPermission")
     fun searchTransit(queryOverride: String? = null) {
@@ -195,10 +220,10 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 )
                 connections = results
                 statusMessage = if (results.isEmpty()) {
-                    "Keine Verbindungen gefunden."
+                    "Keine Verbindungen in den nächsten 45 Min. gefunden."
                 } else {
                     val areaLabel = if (cityContextName.isNotBlank()) " in $cityContextName" else ""
-                    "Nächste Abfahrten$areaLabel:"
+                    "Verbindungen$areaLabel (nächste 45 Min.):"
                 }
             } catch (e: Exception) {
                 statusMessage = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
@@ -362,15 +387,16 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(14.dp)
     ) {
         Text(
             text = "Öffi Finder",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
         )
+
         availableUpdate?.let { upd ->
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Button(
                 onClick = {
                     scope.launch {
@@ -391,7 +417,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 Text(if (isUpdating) "Lade Update..." else "Update installieren: ${upd.title}")
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+
+        Spacer(modifier = Modifier.height(6.dp))
 
         Row(
             modifier = Modifier
@@ -420,7 +447,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -445,52 +472,163 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 Text(text = if (isListening) "..." else "MIC", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         Button(
             onClick = { searchTransit() },
             enabled = !isLoading,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(if (isLoading) "Suche läuft..." else "Nächste Verbindung finden")
+            Text(if (isLoading) "Suche läuft..." else "Verbindungen finden")
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
         Text(text = statusMessage, style = MaterialTheme.typography.bodyMedium)
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // NEUE SPALTE / ÜBERSICHT: Abfahrten der nächsten 45 Minuten
+        if (connections.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text(
+                        text = "Abfahrten in den nächsten 45 Minuten",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        connections.forEach { conn ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 2.dp
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = conn.firstDepartureTime + if (conn.firstDelayMinutes > 0) " (+${conn.firstDelayMinutes}')" else "",
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (conn.firstDelayMinutes > 2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = conn.summaryLines,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = "An ${conn.finalArrivalTime} (${conn.totalDurationMinutes} Min)",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+        }
+
+        // DETAILLIERTE VERBINDUNGEN MIT ALLEN UMSTIEGEN & LINIENNUMMERN
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(connections) { conn ->
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(12.dp)) {
+                        // Kopfzeile der Verbindung: Linienkette + Gesamtdauer + Umstiege
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = conn.line,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            val delayText = if (conn.delayMinutes > 0) " (+${conn.delayMinutes} Min)" else " (pünktlich)"
-                            Text(
-                                text = "${conn.departureTime}$delayText",
+                                text = conn.summaryLines,
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = if (conn.delayMinutes > 2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                modifier = Modifier.weight(1f)
                             )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        if (conn.walkInfo.isNotBlank()) {
+                            val transferLabel = when (conn.transfersCount) {
+                                0 -> "Direkt"
+                                1 -> "1 Umstieg"
+                                else -> "${conn.transfersCount} Umstiege"
+                            }
                             Text(
-                                text = conn.walkInfo,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.secondary
+                                text = "$transferLabel · ${conn.totalDurationMinutes} Min",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
-                        Text(text = "Richtung: ${conn.direction}")
-                        Text(text = "Ab: ${conn.originStop}")
-                        Text(text = "An: ${conn.destinationStop}")
+
+                        Text(
+                            text = "Start: ${conn.firstDepartureTime} → Ziel: ${conn.finalArrivalTime}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Einzelne Fahrtabschnitte & Umstiege
+                        conn.legs.forEachIndexed { idx, leg ->
+                            if (idx > 0) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            if (leg.isWalk) {
+                                Text(
+                                    text = "↳ Fußweg (${leg.durationMinutes} Min, ${leg.distanceMeters} m) nach ${leg.toStop}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(
+                                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                            shape = RoundedCornerShape(6.dp)
+                                        )
+                                        .padding(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "${leg.lineName} → ${leg.direction}",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        val delayStr = if (leg.delayMinutes > 0) " (+${leg.delayMinutes}')" else ""
+                                        Text(
+                                            text = "${leg.startTime}$delayStr",
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (leg.delayMinutes > 2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                    Text(
+                                        text = "Ab ${leg.startTime}: ${leg.fromStop}",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Text(
+                                        text = "An ${leg.endTime}: ${leg.toStop}",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -558,77 +696,149 @@ suspend fun fetchConnections(
     val destLon = destObj.getDouble("lon")
     val destName = destObj.optString("name", enrichedQuery)
 
+    // Mehr Routen anfordern (numItineraries=10), um alle Abfahrten der nächsten 45 Minuten abzudecken
     val planUrl = "https://api.transitous.org/api/v1/plan" +
             "?fromPlace=$fromLat,$fromLon" +
             "&toPlace=$destLat,$destLon" +
-            "&numItineraries=5"
+            "&numItineraries=10"
 
     val root = JSONObject(httpGet(planUrl))
     val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
     val resultList = mutableListOf<TransitConnection>()
+    val nowMillis = System.currentTimeMillis()
+    val maxWindowMillis = nowMillis + 45 * 60 * 1000L
 
     for (i in 0 until itineraries.length()) {
         val itinerary = itineraries.getJSONObject(i)
-        val legs = itinerary.getJSONArray("legs")
-        var initialWalkNote = ""
+        val legsJson = itinerary.getJSONArray("legs")
+        val totalDurSec = itinerary.optInt("duration", 0)
+        val parsedLegs = mutableListOf<RouteLegInfo>()
+        val transitLineNames = mutableListOf<String>()
 
-        for (j in 0 until legs.length()) {
-            val leg = legs.getJSONObject(j)
+        var firstTransitDepartureTime = ""
+        var firstTransitDepartureMillis: Long? = null
+        var firstTransitDelay = 0
+        var firstTransitLine = ""
+        var firstTransitDir = ""
+        var finalArrTime = ""
+
+        for (j in 0 until legsJson.length()) {
+            val leg = legsJson.getJSONObject(j)
             val mode = leg.optString("mode", "")
-
-            if (mode.equals("WALK", ignoreCase = true)) {
-                val durationSec = leg.optInt("duration", 0)
-                val dist = leg.optDouble("distance", 0.0).toInt()
-                if (j == 0 && durationSec > 60) {
-                    val walkMins = maxOf(1, durationSec / 60)
-                    initialWalkNote = "Fußweg zur Haltestelle: ca. $walkMins Min. ($dist m)"
-                }
-                continue
-            }
-
-            val routeShort = leg.optString("routeShortName", "")
-            val displayName = if (routeShort.isNotBlank()) {
-                "$mode $routeShort"
-            } else {
-                leg.optString("routeLongName", mode.ifBlank { "ÖPNV" })
-            }
-            val headsign = leg.optString("headsign", destName)
-            val originName = leg.optJSONObject("from")?.optString("name") ?: "Haltestelle"
+            val isWalk = mode.equals("WALK", ignoreCase = true)
+            val durSec = leg.optInt("duration", 0)
+            val dist = leg.optDouble("distance", 0.0).toInt()
+            val originName = leg.optJSONObject("from")?.optString("name") ?: "Start"
             val arrivalStopName = leg.optJSONObject("to")?.optString("name") ?: destName
 
             val startTimeStr = leg.optString("startTime", "")
+            val endTimeStr = leg.optString("endTime", "")
             val scheduledStartStr = leg.optString("scheduledStartTime", startTimeStr)
-            val formattedTime = if (startTimeStr.length >= 16 && startTimeStr.contains("T")) {
-                startTimeStr.substringAfter("T").take(5)
+
+            val formattedStart = formatIsoTime(startTimeStr)
+            val formattedEnd = formatIsoTime(endTimeStr)
+            finalArrTime = formattedEnd
+
+            if (isWalk) {
+                // Kurze Umsteigewege unter 40m ausblenden, relevante Fußwege anzeigen
+                if (dist >= 40 || durSec >= 60) {
+                    parsedLegs.add(
+                        RouteLegInfo(
+                            isWalk = true,
+                            lineName = "Fußweg",
+                            direction = "",
+                            fromStop = originName,
+                            toStop = arrivalStopName,
+                            startTime = formattedStart,
+                            endTime = formattedEnd,
+                            delayMinutes = 0,
+                            durationMinutes = maxOf(1, durSec / 60),
+                            distanceMeters = dist
+                        )
+                    )
+                }
             } else {
-                SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
-            }
+                val routeShort = leg.optString("routeShortName", "")
+                val displayName = if (routeShort.isNotBlank()) {
+                    "$mode $routeShort"
+                } else {
+                    leg.optString("routeLongName", mode.ifBlank { "ÖPNV" })
+                }
+                val headsign = leg.optString("headsign", destName)
+                val delayMins = calculateDelayMinutes(scheduledStartStr, startTimeStr)
 
-            val delayMins = calculateDelayMinutes(scheduledStartStr, startTimeStr)
+                if (firstTransitDepartureTime.isEmpty()) {
+                    firstTransitDepartureTime = formattedStart
+                    firstTransitDepartureMillis = parseIsoMillis(startTimeStr)
+                    firstTransitDelay = delayMins
+                    firstTransitLine = displayName
+                    firstTransitDir = headsign
+                }
 
-            resultList.add(
-                TransitConnection(
-                    line = displayName,
-                    direction = headsign,
-                    departureTime = formattedTime,
-                    delayMinutes = delayMins,
-                    originStop = originName,
-                    destinationStop = arrivalStopName,
-                    walkInfo = initialWalkNote
+                transitLineNames.add(displayName)
+                parsedLegs.add(
+                    RouteLegInfo(
+                        isWalk = false,
+                        lineName = displayName,
+                        direction = headsign,
+                        fromStop = originName,
+                        toStop = arrivalStopName,
+                        startTime = formattedStart,
+                        endTime = formattedEnd,
+                        delayMinutes = delayMins,
+                        durationMinutes = maxOf(1, durSec / 60),
+                        distanceMeters = dist
+                    )
                 )
-            )
-            break
+            }
         }
+
+        if (transitLineNames.isEmpty()) continue
+
+        // Filter auf die nächsten 45 Minuten (sofern Zeitstempel vorliegt; mindestens die ersten 3 Treffer behalten)
+        if (firstTransitDepartureMillis != null && firstTransitDepartureMillis > maxWindowMillis && resultList.size >= 3) {
+            continue
+        }
+
+        resultList.add(
+            TransitConnection(
+                summaryLines = transitLineNames.joinToString(" → "),
+                firstLine = firstTransitLine,
+                firstDirection = firstTransitDir,
+                firstDepartureTime = firstTransitDepartureTime,
+                finalArrivalTime = finalArrTime,
+                firstDelayMinutes = firstTransitDelay,
+                totalDurationMinutes = maxOf(1, totalDurSec / 60),
+                transfersCount = maxOf(0, transitLineNames.size - 1),
+                legs = parsedLegs
+            )
+        )
     }
     resultList
 }
 
+private fun formatIsoTime(isoStr: String): String {
+    return if (isoStr.length >= 16 && isoStr.contains("T")) {
+        isoStr.substringAfter("T").take(5)
+    } else {
+        SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
+    }
+}
+
+private fun parseIsoMillis(isoStr: String): Long? {
+    return try {
+        if (isoStr.length < 19) return null
+        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        fmt.parse(isoStr.take(19))?.time
+    } catch (_: Exception) {
+        null
+    }
+}
+
 private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int {
     return try {
-        if (scheduledIso.isBlank() || actualIso.isBlank() || scheduledIso == actualIso) return 0
-        val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
-        val t1 = fmt.parse(scheduledIso.take(19))?.time ?: return 0
-        val t2 = fmt.parse(actualIso.take(19))?.time ?: return 0
+        val t1 = parseIsoMillis(scheduledIso) ?: return 0
+        val t2 = parseIsoMillis(actualIso) ?: return 0
         maxOf(0, ((t2 - t1) / 60000L).toInt())
     } catch (_: Exception) {
         0
@@ -638,7 +848,7 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "OeffiFinderAndroid/2.3 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.setRequestProperty("User-Agent", "OeffiFinderAndroid/3.0 (https://github.com/ClaudeHoeni/LippstadtBus)")
     conn.connectTimeout = 12000
     conn.readTimeout = 12000
     if (conn.responseCode !in 200..299) {
@@ -646,11 +856,6 @@ private fun httpGet(urlString: String): String {
     }
     return conn.inputStream.bufferedReader().use { it.readText() }
 }
-
-data class AppUpdateInfo(
-    val title: String,
-    val downloadUrl: String
-)
 
 suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
     try {
@@ -678,7 +883,7 @@ suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext
 
 suspend fun downloadAndInstallApk(context: Context, update: AppUpdateInfo) {
     val apkFile = withContext(Dispatchers.IO) {
-        val targetFile = java.io.File(context.cacheDir, "update.apk")
+        val targetFile = File(context.cacheDir, "update.apk")
         val conn = URL(update.downloadUrl).openConnection() as HttpURLConnection
         conn.setRequestProperty("User-Agent", "OeffiFinderUpdater/1.0")
         conn.connectTimeout = 15000
@@ -693,7 +898,7 @@ suspend fun downloadAndInstallApk(context: Context, update: AppUpdateInfo) {
         targetFile
     }
 
-    val uri = androidx.core.content.FileProvider.getUriForFile(
+    val uri = FileProvider.getUriForFile(
         context,
         "${context.packageName}.fileprovider",
         apkFile
