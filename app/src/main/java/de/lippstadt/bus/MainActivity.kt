@@ -942,10 +942,13 @@ suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext
         val jsonStr = httpGet("https://api.github.com/repos/ClaudeHoeni/LippstadtBus/releases/tags/v-latest")
         val obj = JSONObject(jsonStr)
         val remoteTitle = obj.optString("name", "")
-        val prefs = context.getSharedPreferences("oeffi_prefs", Context.MODE_PRIVATE)
-        val installedTitle = prefs.getString("installed_release_name", "") ?: ""
+        // Extrahiert die Build-Nummer aus "Aktuelle Version (15)" -> 15 -> versionCode = 115
+        val remoteRun = Regex("\\((\\d+)\\)").find(remoteTitle)?.groupValues?.get(1)?.toIntOrNull()
+            ?: return@withContext null
+        val remoteVersionCode = 100 + remoteRun
 
-        if (remoteTitle.isBlank() || remoteTitle == installedTitle) return@withContext null
+        // Nur anzeigen, wenn die Version auf GitHub echt neuer ist als die installierte App!
+        if (remoteVersionCode <= BuildConfig.VERSION_CODE) return@withContext null
 
         val assets = obj.optJSONArray("assets") ?: return@withContext null
         for (i in 0 until assets.length()) {
