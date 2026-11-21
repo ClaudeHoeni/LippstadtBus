@@ -1047,56 +1047,65 @@ suspend fun searchGeoCandidates(
 ): List<GeoCandidate> = withContext(Dispatchers.IO) {
     try {
         val cleanQuery = rawQuery.trim()
-        val encoded = URLEncoder.encode(cleanQuery, "UTF-8")
-        val url = "https://api.transitous.org/api/v1/geocode?text=$encoded&place=$biasLat,$biasLon"
-        val arr = JSONArray(httpGet(url))
-        if (arr.length() == 0) return@withContext emptyList()
-
-        val rawCandidates = mutableListOf<GeoCandidate>()
-        for (i in 0 until arr.length()) {
-            val obj = arr.getJSONObject(i)
-            val name = obj.optString("name", cleanQuery).trim()
-            val lat = obj.optDouble("lat", Double.NaN)
-            val lon = obj.optDouble("lon", Double.NaN)
-            if (lat.isNaN() || lon.isNaN()) continue
-
-            // Nur Treffer im regionalen Umkreis (bis 50 km, z. B. Berlin + Potsdam) berücksichtigen
-            val distFromUser = distanceMetersBetween(biasLat, biasLon, lat, lon)
-            if (distFromUser > 50_000f && rawCandidates.isNotEmpty()) continue
-
-            // Ortsteil / Stadt aus "areas" extrahieren
-            val areaParts = mutableListOf<String>()
-            val areas = obj.optJSONArray("areas")
-            if (areas != null) {
-                for (a in 0 until areas.length()) {
-                    val areaObj = areas.getJSONObject(a)
-                    val areaName = areaObj.optString("name", "").trim()
-                    if (areaName.isNotBlank() && !areaParts.contains(areaName) && areaName != "Deutschland") {
-                        areaParts.add(areaName)
-                    }
-                }
-            }
-            val zip = obj.optString("zip", "").trim()
-            val areaText = buildString {
-                if (zip.isNotBlank()) append("$zip ")
-                append(areaParts.take(2).joinToString(", "))
-            }.trim()
-
-            rawCandidates.add(
-                GeoCandidate(
-                    name = name,
-                    areaLabel = areaText,
-                    lat = lat,
-                    lon = lon
-                )
+        val urls = mutableListOf(
+            "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(cleanQuery, "UTF-8")}&place=$biasLat,$biasLon"
+        )
+        if (cityContext.isNotBlank() && !cleanQuery.contains(cityContext, ignoreCase = true)) {
+            val withCity = "$cleanQuery, $cityContext"
+            urls.add(
+                0,
+                "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(withCity, "UTF-8")}&place=$biasLat,$biasLon"
             )
         }
 
-        // Nahe beieinanderliegende Duplikate (< 450 m, z. B. Bushaltestelle + U-Bahnhof derselben Straße) zusammenfassen
+        val rawCandidates = mutableListOf<GeoCandidate>()
+        for (url in urls) {
+            val arr = try { JSONArray(httpGet(url)) } catch (_: Exception) { continue }
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val name = obj.optString("name", cleanQuery).trim()
+                val lat = obj.optDouble("lat", Double.NaN)
+                val lon = obj.optDouble("lon", Double.NaN)
+                if (lat.isNaN() || lon.isNaN()) continue
+
+                // Strikt nur Treffer im Umkreis von 45 km (z. B. ganz Berlin + Potsdam/Umland, niemals Düsseldorf)
+                val distFromUser = distanceMetersBetween(biasLat, biasLon, lat, lon)
+                if (distFromUser > 45_000f) continue
+
+                val areaParts = mutableListOf<String>()
+                val areas = obj.optJSONArray("areas")
+                if (areas != null) {
+                    for (a in 0 until areas.length()) {
+                        val areaObj = areas.getJSONObject(a)
+                        val areaName = areaObj.optString("name", "").trim()
+                        if (areaName.isNotBlank() && !areaParts.contains(areaName) && areaName != "Deutschland") {
+                            areaParts.add(areaName)
+                        }
+                    }
+                }
+                val zip = obj.optString("zip", "").trim()
+                val areaText = buildString {
+                    if (zip.isNotBlank()) append("$zip ")
+                    append(areaParts.take(3).joinToString(", "))
+                }.trim()
+
+                rawCandidates.add(
+                    GeoCandidate(
+                        name = name,
+                        areaLabel = areaText,
+                        lat = lat,
+                        lon = lon
+                    )
+                )
+            }
+        }
+
+        // Nach Entfernung sortieren (nächstgelegene zuerst) und Duplikate (< 500 m) zusammenfassen
+        val sortedByDist = rawCandidates.sortedBy { distanceMetersBetween(biasLat, biasLon, it.lat, it.lon) }
         val distinctCandidates = mutableListOf<GeoCandidate>()
-        for (cand in rawCandidates) {
+        for (cand in sortedByDist) {
             val isDuplicate = distinctCandidates.any { existing ->
-                distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 450f
+                distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 500f
             }
             if (!isDuplicate) {
                 distinctCandidates.add(cand)
@@ -1104,8 +1113,6 @@ suspend fun searchGeoCandidates(
             if (distinctCandidates.size >= 5) break
         }
 
-        // Wenn der Nutzer bereits selbst einen Ortsteil/Stadt dazugesagt hat (z. B. "Voltastraße Siemensstadt"),
-        // direkt den passenden Treffer bevorzugen
         if (distinctCandidates.size > 1 && cityContext.isNotBlank() &&
             cleanQuery.contains(cityContext, ignoreCase = true)
         ) {
@@ -1138,10 +1145,19 @@ suspend fun fetchConnectionsForCoords(
         else -> ""
     }
 
+    val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+        timeZone = java.util.TimeZone.getTimeZone("UTC")
+    }
+    val nowIsoEncoded = URLEncoder.encode(isoFmt.format(Date()), "UTF-8")
+
     val planUrl = "https://api.transitous.org/api/v1/plan" +
             "?fromPlace=$startLat,$startLon" +
             "&toPlace=$destLat,$destLon" +
-            "&numItineraries=12$modesParam"
+            "&time=$nowIsoEncoded" +
+            "&arriveBy=false" +
+            "&maxPreTransitTime=1800" +
+            "&maxPostTransitTime=1800" +
+            "&numItineraries=10$modesParam"
 
     val root = JSONObject(httpGet(planUrl))
     val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
