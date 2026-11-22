@@ -1412,11 +1412,10 @@ suspend fun searchNearbyPoisRobust(
     centerLon: Double,
     category: PoiCategory,
     cityContext: String,
-    radiusMeters: Int = 2000
+    radiusMeters: Int = 1200
 ): List<GeoCandidate> = withContext(Dispatchers.IO) {
     val found = mutableListOf<GeoCandidate>()
 
-    // 1. Wenn speziell nach der nächsten Haltestelle gefragt wurde: direkt Transitous Reverse-Geocode nutzen (superschnell & exakt)
     if (category.isTransitStopSearch) {
         try {
             val revUrl = "https://api.transitous.org/api/v1/reverse-geocode?place=$centerLat,$centerLon"
@@ -1446,17 +1445,17 @@ suspend fun searchNearbyPoisRobust(
         }
     }
 
-    // 2. Overpass-Abfrage über mehrere Spiegelserver mit Fallback
+    // 1. Overpass-Abfrage (inkl. node, way, relation) mit Straße + Hausnummer im Titel, falls kein Ladenname hinterlegt ist
     if (found.isEmpty()) {
         val unionLines = category.overpassQueries.joinToString("\n") { filter ->
             "  node$filter(around:$radiusMeters,$centerLat,$centerLon);\n  way$filter(around:$radiusMeters,$centerLat,$centerLon);"
         }
         val query = """
-            [out:json][timeout:12];
+            [out:json][timeout:10];
             (
             $unionLines
             );
-            out center 20;
+            out center 25;
         """.trimIndent()
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val endpoints = listOf(
@@ -1477,12 +1476,21 @@ suspend fun searchNearbyPoisRobust(
                     if (lat.isNaN() || lon.isNaN()) continue
 
                     val rawName = tags.optString("name", "").trim()
-                    val displayName = if (rawName.isNotBlank()) rawName else category.label
                     val street = tags.optString("addr:street", "").trim()
                     val houseNo = tags.optString("addr:housenumber", "").trim()
-                    val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
                     val addrPart = listOf(street, houseNo).filter { it.isNotBlank() }.joinToString(" ")
-                    val label = if (addrPart.isNotBlank()) "$addrPart · ca. $dist m" else "ca. $dist m entfernt"
+                    val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
+
+                    val displayName = when {
+                        rawName.isNotBlank() -> rawName
+                        addrPart.isNotBlank() -> "${category.label} ($addrPart)"
+                        else -> category.label
+                    }
+                    val label = if (addrPart.isNotBlank() && rawName.isNotBlank()) {
+                        "$addrPart · ca. $dist m"
+                    } else {
+                        "ca. $dist m entfernt"
+                    }
 
                     found.add(
                         GeoCandidate(
@@ -1497,21 +1505,55 @@ suspend fun searchNearbyPoisRobust(
                 }
                 if (found.isNotEmpty()) break
             } catch (_: Exception) {
-                // Nächsten Overpass-Server probieren
             }
         }
     }
 
-    // 3. Fallback über Transitous Geocode falls Overpass komplett blockiert ist
-    if (found.isEmpty()) {
-        val fallbackQuery = if (cityContext.isNotBlank()) "${category.fallbackKeyword} $cityContext" else category.fallbackKeyword
-        found.addAll(searchTransitStopsAndPlaces(fallbackQuery, centerLat, centerLon, cityContext))
+    // 2. Schneller Photon-Geocode-Fallback (mit Standort-Bias und echter Adresse)
+    if (found.isEmpty() && !category.isTransitStopSearch) {
+        try {
+            val qText = if (cityContext.isNotBlank()) "${category.fallbackKeyword} $cityContext" else category.fallbackKeyword
+            val photonUrl = "https://photon.komoot.io/api/?q=${URLEncoder.encode(qText, "UTF-8")}&lat=$centerLat&lon=$centerLon&limit=10"
+            val root = JSONObject(httpGet(photonUrl))
+            val features = root.optJSONArray("features")
+            if (features != null) {
+                for (i in 0 until features.length()) {
+                    val feat = features.getJSONObject(i)
+                    val coords = feat.optJSONObject("geometry")?.optJSONArray("coordinates") ?: continue
+                    val lon = coords.optDouble(0, Double.NaN)
+                    val lat = coords.optDouble(1, Double.NaN)
+                    if (lat.isNaN() || lon.isNaN()) continue
+                    val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
+                    if (dist > 2500) continue
+
+                    val props = feat.optJSONObject("properties") ?: continue
+                    val pName = props.optString("name", "").trim()
+                    val pStreet = props.optString("street", "").trim()
+                    val pHouse = props.optString("housenumber", "").trim()
+                    val addrPart = listOf(pStreet, pHouse).filter { it.isNotBlank() }.joinToString(" ")
+                    val title = if (pName.isNotBlank()) pName else if (addrPart.isNotBlank()) "${category.label} ($addrPart)" else category.label
+                    val sub = if (addrPart.isNotBlank() && pName.isNotBlank()) "$addrPart · ca. $dist m" else "ca. $dist m entfernt"
+
+                    found.add(
+                        GeoCandidate(
+                            name = title,
+                            areaLabel = sub,
+                            lat = lat,
+                            lon = lon,
+                            isStop = false,
+                            isStreet = false
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
     }
 
     val sorted = found.sortedBy { distanceMetersBetween(centerLat, centerLon, it.lat, it.lon) }
     val distinct = mutableListOf<GeoCandidate>()
     for (cand in sorted) {
-        val dup = distinct.any { distanceMetersBetween(it.lat, it.lon, cand.lat, cand.lon) < 40f }
+        val dup = distinct.any { distanceMetersBetween(it.lat, it.lon, cand.lat, cand.lon) < 35f }
         if (!dup) distinct.add(cand)
         if (distinct.size >= 6) break
     }

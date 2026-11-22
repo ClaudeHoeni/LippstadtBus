@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MamaFon</string>
+    <string name="accessibility_service_description">Ermöglicht die Fernsteuerung von Klicks, Wischgesten und Navigationstasten während einer aktiven MamaFon-Sitzung.</string>
+</resources>

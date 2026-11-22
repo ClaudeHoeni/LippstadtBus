@@ -2,55 +2,64 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
 android {
-    namespace = "de.lippstadt.bus"
+    namespace = "de.chris.mamafon"
     compileSdk = 34
 
-    signingConfigs {
-        create("fixedDebug") {
-            storeFile = file("oeffi-release.jks")
-            storePassword = "oeffi1234"
-            keyAlias = "oeffi"
-            keyPassword = "oeffi1234"
-        }
+    defaultConfig {
+        applicationId = "de.chris.mamafon"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
-    defaultConfig {
-        applicationId = "de.lippstadt.bus"
-        minSdk = 24
-        targetSdk = 34
-        val ghRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 20
-        versionCode = 100 + ghRun
-        versionName = "1.$ghRun"
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.jks")
+            storePassword = System.getenv("KEYSTORE_PASS") ?: "android123"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "mamafon"
+            keyPassword = System.getenv("KEY_PASS") ?: "android123"
+        }
     }
 
     buildTypes {
-        getByName("debug") {
-            signingConfig = signingConfigs.getByName("fixedDebug")
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 
-    buildFeatures {
-        compose = true
-        buildConfig = true
-    }
-    composeOptions { kotlinCompilerExtensionVersion = "1.5.14" }
     compileOptions {
-        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.14"
+    }
 }
+
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-    testImplementation("junit:junit:4.13.2")
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("androidx.activity:activity-compose:1.9.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.activity:activity-compose:1.9.1")
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))
     implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
-    implementation("com.google.android.gms:play-services-location:21.3.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
+    implementation("androidx.compose.material:material-icons-extended")
+
+    // WebRTC (inkl. ScreenCapturerAndroid & EglBase)
+    implementation("io.getstream:stream-webrtc-android:1.1.3")
+
+    // MQTT Client für serverloses WebSocket-Signaling
+    implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
 }
