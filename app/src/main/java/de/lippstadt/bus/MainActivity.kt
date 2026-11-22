@@ -298,7 +298,7 @@ fun LiveCompassArrowCard(
     onOpenMaps: (Double, Double, String) -> Unit
 ) {
     val context = LocalContext.current
-    var preferFirstStop by remember { mutableStateOf(stopTarget != null) }
+    var preferFirstStop by remember { mutableStateOf(stopTarget != null && destTarget == null) }
 
     LaunchedEffect(stopTarget, destTarget) {
         preferFirstStop = stopTarget != null
@@ -355,7 +355,7 @@ fun LiveCompassArrowCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(72.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable { onOpenMaps(tLat, tLon, targetName) },
@@ -363,7 +363,7 @@ fun LiveCompassArrowCard(
                 ) {
                     Text(
                         text = "⬆",
-                        fontSize = 30.sp,
+                        fontSize = 42.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.rotate(relativeArrowAngle)
@@ -374,7 +374,7 @@ fun LiveCompassArrowCard(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (preferFirstStop && stopTarget != null) "Richtung Starthaltestelle" else "Richtung Ziel",
+                        text = if (preferFirstStop && stopTarget != null) "Richtung Starthaltestelle" else "Richtung Ziel (Spätkauf / Ort)",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
