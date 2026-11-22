@@ -634,7 +634,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 val (baseLat, baseLon, cityContextName) = locData
                 activeStartCoords = baseLat to baseLon
 
-                val candidates: List<GeoCandidate> = if (parsed.poiCategory != null) {
+                val lowerQuery = parsed.destination.lowercase(Locale.GERMANY)
+                val isLocalPlaceQuery = parsed.poiCategory != null ||
+                    Regex("\b(supermarkt|bäcker|baecker|bäckerei|baeckerei|spätkauf|spaetkauf|kiosk|apotheke|arzt|drogerie|aldi|lidl|rewe|edeka|penny|netto)\b").containsMatchIn(lowerQuery)
+
+                val candidates: List<GeoCandidate> = if (isLocalPlaceQuery) {
                     var centerLat = baseLat
                     var centerLon = baseLon
                     var anchorLabel = "deiner Nähe"
@@ -1564,6 +1568,52 @@ suspend fun searchTransitStopsAndPlaces(
     } catch (_: Exception) {
         emptyList()
     }
+}
+
+private fun buildDirectWalkConnection(
+    startLat: Double,
+    startLon: Double,
+    dest: GeoCandidate
+): TransitConnection {
+    val distMeters = distanceMetersBetween(startLat, startLon, dest.lat, dest.lon).toInt()
+    val walkMins = maxOf(1, kotlin.math.ceil(distMeters / 75.0).toInt())
+    val nowMillis = System.currentTimeMillis()
+    val nowFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(nowMillis))
+    val arrMillis = nowMillis + walkMins * 60_000L
+    val arrFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(arrMillis))
+    return TransitConnection(
+        summaryLines = "🚶 Nächster Ort zu Fuß ($distMeters m)",
+        firstLine = "Fußweg",
+        firstDirection = dest.fullDisplay,
+        firstDepartureTime = nowFmt,
+        finalArrivalTime = arrFmt,
+        departureMillis = nowMillis,
+        arrivalMillis = arrMillis,
+        firstDelayMinutes = 0,
+        totalDurationMinutes = walkMins,
+        transfersCount = 0,
+        totalWalkMeters = distMeters,
+        isWalkOnly = true,
+        legs = listOf(
+            RouteLegInfo(
+                isWalk = true,
+                isTransfer = false,
+                lineName = "Fußweg",
+                direction = dest.fullDisplay,
+                fromStop = "Aktueller Standort",
+                toStop = dest.fullDisplay,
+                fromLat = startLat,
+                fromLon = startLon,
+                toLat = dest.lat,
+                toLon = dest.lon,
+                startTime = nowFmt,
+                endTime = arrFmt,
+                delayMinutes = 0,
+                durationMinutes = walkMins,
+                distanceMeters = distMeters
+            )
+        )
+    )
 }
 
 suspend fun fetchConnectionsForCoords(
