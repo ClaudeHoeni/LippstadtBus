@@ -486,7 +486,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
-    @SuppressLint("MissingPermission")
     DisposableEffect(Unit) {
         val hasLoc = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
@@ -534,7 +533,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
-    @SuppressLint("MissingPermission")
     suspend fun detectCurrentLocation(): Triple<Double, Double, String>? {
         val hasLoc = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
