@@ -20,8 +20,8 @@ android {
         minSdk = 24
         targetSdk = 34
         val ghRun = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 20
-        versionCode = 103 + ghRun
-        versionName = "1.0.103"
+        versionCode = 100 + ghRun
+        versionName = "1.0.100"
     }
 
     buildTypes {
