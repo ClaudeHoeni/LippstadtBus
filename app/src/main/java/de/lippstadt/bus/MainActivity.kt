@@ -696,8 +696,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
                     statusMessage = "Suche ${parsed.poiCategory.label} bei $anchorLabel..."
                     searchNearbyPoisRobust(
-                        centerLat = centerLat,
-                        centerLon = centerLon,
+                        centerLat = baseLat,
+                        centerLon = baseLon,
                         category = parsed.poiCategory,
                         cityContext = cityContextName,
                         radiusMeters = if (parsed.poiAnchorPlace != null) 900 else 850
@@ -709,8 +709,8 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 if (candidates.isEmpty() && parsed.poiCategory != null) {
                     statusMessage = "Erweitere Umkreissuche für ${parsed.poiCategory.label}..."
                     candidates = searchNearbyPoisRobust(
-                        centerLat = centerLat,
-                        centerLon = centerLon,
+                        centerLat = baseLat,
+                        centerLon = baseLon,
                         category = parsed.poiCategory,
                         cityContext = cityContextName,
                         radiusMeters = 1800
