@@ -48,3 +48,8 @@ jobs:
           body: "Umgebungssuche, Haltestellenauswahl, Zeitangaben und Wecker korrigiert. Automatischer Build Nr. ${{ github.run_number }}."
           files: app/build/outputs/apk/debug/app-debug.apk
           fail_on_unmatched_files: true
+      - name: Copy APK to ABFAHRTEN.apk
+        run: |
+          APK_FILE=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Copying $APK_FILE to ABFAHRTEN.apk"
+          cp "$APK_FILE" ./ABFAHRTEN.apk
