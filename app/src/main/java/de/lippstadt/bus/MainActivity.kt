@@ -580,7 +580,48 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             preferredMode = preferredMode,
             customDepartureMillis = targetTimeMillis
         )
-        connections = results
+        val distToDest = distanceMetersBetween(startLat, startLon, dest.lat, dest.lon).toInt()
+        val walkMins = maxOf(1, distToDest / 75)
+        val nowFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
+        val arrFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(System.currentTimeMillis() + walkMins * 60_000L))
+        val walkOption = TransitConnection(
+            summaryLines = "🚶 Fußweg (${walkMins} Min., ${distToDest} m)",
+            firstLine = "Fußweg",
+            firstDirection = dest.name,
+            firstDepartureTime = nowFmt,
+            finalArrivalTime = arrFmt,
+            departureMillis = System.currentTimeMillis(),
+            arrivalMillis = System.currentTimeMillis() + walkMins * 60_000L,
+            firstDelayMinutes = 0,
+            totalDurationMinutes = walkMins,
+            transfersCount = 0,
+            totalWalkMeters = distToDest,
+            isWalkOnly = true,
+            legs = listOf(
+                RouteLegInfo(
+                    isWalk = true,
+                    isTransfer = false,
+                    lineName = "Fußweg",
+                    direction = dest.name,
+                    fromStop = "Aktueller Standort",
+                    toStop = dest.name,
+                    fromLat = startLat,
+                    fromLon = startLon,
+                    toLat = dest.lat,
+                    toLon = dest.lon,
+                    startTime = nowFmt,
+                    endTime = arrFmt,
+                    delayMinutes = 0,
+                    durationMinutes = walkMins,
+                    distanceMeters = distToDest
+                )
+            )
+        )
+        connections = if (distToDest <= 900 && results.none { it.isWalkOnly }) {
+            listOf(walkOption) + results
+        } else {
+            results
+        }
         selectedConnectionIndex = 0
         detailsDropdownExpanded = false
         expandedLegIndex = null
@@ -635,7 +676,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 val (baseLat, baseLon, cityContextName) = locData
                 activeStartCoords = baseLat to baseLon
 
-                val candidates: List<GeoCandidate> = if (parsed.poiCategory != null) {
+                var candidates: List<GeoCandidate> = if (parsed.poiCategory != null) {
                     var centerLat = baseLat
                     var centerLon = baseLon
                     var anchorLabel = "deiner Nähe"
@@ -659,10 +700,21 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                         centerLon = centerLon,
                         category = parsed.poiCategory,
                         cityContext = cityContextName,
-                        radiusMeters = if (parsed.poiAnchorPlace != null) 1200 else 2500
+                        radiusMeters = if (parsed.poiAnchorPlace != null) 900 else 850
                     )
                 } else {
                     searchTransitStopsAndPlaces(parsed.destination, baseLat, baseLon, cityContextName)
+                }
+
+                if (candidates.isEmpty() && parsed.poiCategory != null) {
+                    statusMessage = "Erweitere Umkreissuche für ${parsed.poiCategory.label}..."
+                    candidates = searchNearbyPoisRobust(
+                        centerLat = centerLat,
+                        centerLon = centerLon,
+                        category = parsed.poiCategory,
+                        cityContext = cityContextName,
+                        radiusMeters = 1800
+                    )
                 }
 
                 if (candidates.isEmpty()) {
