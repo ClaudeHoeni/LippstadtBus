@@ -298,14 +298,14 @@ fun LiveCompassArrowCard(
     onOpenMaps: (Double, Double, String) -> Unit
 ) {
     val context = LocalContext.current
-    var preferFirstStop by remember { mutableStateOf(stopTarget != null && destTarget == null) }
+    var preferFirstStop by remember { mutableStateOf(false) }
 
-    LaunchedEffect(stopTarget, destTarget) {
-        preferFirstStop = stopTarget != null
+    LaunchedEffect(destTarget, stopTarget) {
+        preferFirstStop = destTarget == null && stopTarget != null
     }
 
-    val activeTarget = if (preferFirstStop && stopTarget != null) stopTarget else (destTarget ?: stopTarget)
-    if (userLat == null || userLon == null || activeTarget == null) return
+    val shownTarget = if (preferFirstStop && stopTarget != null) stopTarget else (destTarget ?: stopTarget)
+    if (userLat == null || userLon == null || shownTarget == null) return
 
     var deviceAzimuth by remember { mutableStateOf(0f) }
     var hasCompassSensor by remember { mutableStateOf(true) }
@@ -335,7 +335,7 @@ fun LiveCompassArrowCard(
         }
     }
 
-    val (targetName, tLat, tLon) = activeTarget
+    val (targetName, tLat, tLon) = shownTarget
     val distMeters = distanceMetersBetween(userLat, userLon, tLat, tLon).toInt()
     val targetBearing = bearingDegreesBetween(userLat, userLon, tLat, tLon)
     val relativeArrowAngle = (targetBearing - deviceAzimuth + 360f) % 360f
@@ -355,7 +355,7 @@ fun LiveCompassArrowCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(72.dp)
+                        .size(84.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable { onOpenMaps(tLat, tLon, targetName) },
@@ -363,7 +363,7 @@ fun LiveCompassArrowCard(
                 ) {
                     Text(
                         text = "⬆",
-                        fontSize = 42.sp,
+                        fontSize = 48.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.rotate(relativeArrowAngle)
@@ -374,23 +374,23 @@ fun LiveCompassArrowCard(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (preferFirstStop && stopTarget != null) "Richtung Starthaltestelle" else "Richtung Ziel (Spätkauf / Ort)",
+                        text = if (preferFirstStop && stopTarget != null) "Richtung Starthaltestelle" else "Richtung Ziel",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = targetName,
-                        style = MaterialTheme.typography.titleSmall,
+                        style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     val distText = if (distMeters >= 1000) {
                         String.format(Locale.GERMANY, "%.1f km Luftlinie", distMeters / 1000f)
                     } else {
-                        "$distMeters m entfernt"
+                        " m entfernt"
                     }
                     Text(
-                        text = if (hasCompassSensor) "$distText · Pfeil folgt Kompass" else "$distText · Richtung ${targetBearing.toInt()}°",
+                        text = if (hasCompassSensor) " · Pfeil folgt Kompass" else " · Richtung °",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -400,7 +400,7 @@ fun LiveCompassArrowCard(
                     onClick = { onOpenMaps(tLat, tLon, targetName) },
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Text("🗺️", fontSize = 16.sp)
+                    Text("🗺️", fontSize = 18.sp)
                 }
             }
 
@@ -411,15 +411,15 @@ fun LiveCompassArrowCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilterChip(
-                        selected = preferFirstStop,
-                        onClick = { preferFirstStop = true },
-                        label = { Text("Zur Haltestelle", fontSize = 12.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
                         selected = !preferFirstStop,
                         onClick = { preferFirstStop = false },
                         label = { Text("Direkt zum Ziel", fontSize = 12.sp) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = preferFirstStop,
+                        onClick = { preferFirstStop = true },
+                        label = { Text("Zur Haltestelle", fontSize = 12.sp) },
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -427,7 +427,6 @@ fun LiveCompassArrowCard(
         }
     }
 }
-
 @Composable
 fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val context = LocalContext.current
