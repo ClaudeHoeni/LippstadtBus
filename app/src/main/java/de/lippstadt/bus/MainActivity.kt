@@ -638,38 +638,51 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 val isLocalPlaceQuery = parsed.poiCategory != null ||
                     Regex("\b(supermarkt|bäcker|baecker|bäckerei|baeckerei|spätkauf|spaetkauf|kiosk|apotheke|arzt|drogerie|aldi|lidl|rewe|edeka|penny|netto)\b").containsMatchIn(lowerQuery)
 
+                val combinedText = "$rawText ${parsed.destination}".lowercase(Locale.GERMANY)
+                val isLocalPlaceQuery = parsed.poiCategory != null ||
+                    listOf(
+                        "supermarkt", "bäcker", "baecker", "bäckerei", "baeckerei",
+                        "spätkauf", "spaetkauf", "kiosk", "apotheke", "arzt",
+                        "drogerie", "in der nähe", "nächste", "naechste",
+                        "aldi", "lidl", "rewe", "edeka", "penny", "netto"
+                    ).any { combinedText.contains(it) }
+
                 val candidates: List<GeoCandidate> = if (isLocalPlaceQuery) {
-                    var centerLat = baseLat
-                    var centerLon = baseLon
-                    var anchorLabel = "deiner Nähe"
-
-                    if (!parsed.poiAnchorPlace.isNullOrBlank()) {
-                        val anchorCands = searchTransitStopsAndPlaces(parsed.poiAnchorPlace, baseLat, baseLon, cityContextName)
-                        val anchor = anchorCands.firstOrNull()
-                        if (anchor == null) {
-                            statusMessage = "Ort \"${parsed.poiAnchorPlace}\" nicht gefunden."
-                            isLoading = false
-                            return@launch
-                        }
-                        centerLat = anchor.lat
-                        centerLon = anchor.lon
-                        anchorLabel = anchor.name
+                    val activeCat = parsed.poiCategory
+                    val searchLabel = activeCat?.label ?: parsed.destination.ifBlank { rawText }
+                    statusMessage = "Suche nächste $searchLabel in der Nähe (ohne Bus)..."
+                    val rawPois = if (activeCat != null) {
+                        searchNearbyPoisRobust(
+                            centerLat = baseLat,
+                            centerLon = baseLon,
+                            category = activeCat,
+                            cityContext = cityContextName,
+                            radiusMeters = 2500
+                        )
+                    } else {
+                        searchTransitStopsAndPlaces(searchLabel, baseLat, baseLon, cityContextName)
                     }
-
-                    statusMessage = "Suche ${parsed.poiCategory?.label} bei $anchorLabel..."
-                    searchNearbyPoisRobust(
-                        centerLat = centerLat,
-                        centerLon = centerLon,
-                        category = parsed.poiCategory!!,
-                        cityContext = cityContextName,
-                        radiusMeters = if (parsed.poiAnchorPlace != null) 1200 else 2500
-                    )
+                    val nonStops = rawPois.filter { !it.isStop }
+                    val pool = if (nonStops.isNotEmpty()) nonStops else rawPois
+                    pool.sortedBy { distanceMetersBetween(baseLat, baseLon, it.lat, it.lon) }
                 } else {
                     searchTransitStopsAndPlaces(parsed.destination, baseLat, baseLon, cityContextName)
                 }
 
                 if (candidates.isEmpty()) {
                     statusMessage = "Ziel \"${parsed.destination}\" nicht gefunden."
+                    isLoading = false
+                    return@launch
+                }
+
+                val chosenDest = candidates.first()
+                if (isLocalPlaceQuery) {
+                    val distM = distanceMetersBetween(baseLat, baseLon, chosenDest.lat, chosenDest.lon).toInt()
+                    placeCandidates = candidates
+                    selectedPlaceIndex = 0
+                    connections = listOf(buildDirectWalkConnection(baseLat, baseLon, chosenDest))
+                    selectedConnectionIndex = 0
+                    statusMessage = "Nächster Ort (${distM} m ohne Bus): ${chosenDest.fullDisplay}"
                     isLoading = false
                     return@launch
                 }
