@@ -1,6 +1,5 @@
 package de.lippstadt.bus
 
-
 import de.lippstadt.bus.R
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
