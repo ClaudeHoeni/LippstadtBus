@@ -30,10 +30,14 @@ jobs:
         env:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: gradle testDebugUnitTest lintDebug assembleDebug
+      - name: Copy APK to ABFAHRTEN.apk
+        run: |
+          APK_FILE=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
+          cp "$APK_FILE" ./ABFAHRTEN.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: OeffiFinder-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: ABFAHRTEN
+          path: ABFAHRTEN.apk
       - name: Update stable release tag
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
@@ -46,10 +50,5 @@ jobs:
           tag_name: v-latest
           name: Aktuelle Version (${{ github.run_number }})
           body: "Umgebungssuche, Haltestellenauswahl, Zeitangaben und Wecker korrigiert. Automatischer Build Nr. ${{ github.run_number }}."
-          files: app/build/outputs/apk/debug/app-debug.apk
+          files: ABFAHRTEN.apk
           fail_on_unmatched_files: true
-      - name: Copy APK to ABFAHRTEN.apk
-        run: |
-          APK_FILE=$(find app/build/outputs/apk -name "*.apk" | head -n 1)
-          echo "Copying $APK_FILE to ABFAHRTEN.apk"
-          cp "$APK_FILE" ./ABFAHRTEN.apk
