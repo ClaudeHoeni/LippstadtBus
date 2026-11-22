@@ -1,5 +1,6 @@
 package de.lippstadt.bus
 
+import de.lippstadt.bus.BuildConfig
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
