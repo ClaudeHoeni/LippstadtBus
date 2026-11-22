@@ -639,7 +639,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     Regex("\b(supermarkt|bäcker|baecker|bäckerei|baeckerei|spätkauf|spaetkauf|kiosk|apotheke|arzt|drogerie|aldi|lidl|rewe|edeka|penny|netto)\b").containsMatchIn(lowerQuery)
 
                 val combinedText = "$rawText ${parsed.destination}".lowercase(Locale.GERMANY)
-                    listOf(
+                listOf(
                         "supermarkt", "bäcker", "baecker", "bäckerei", "baeckerei",
                         "spätkauf", "spaetkauf", "kiosk", "apotheke", "arzt",
                         "drogerie", "in der nähe", "nächste", "naechste",
@@ -1038,7 +1038,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    listOf(10, 15, 20, 30).filter { it <= minsUntilDep - 2 }.take(3).forEach { mins ->
+                listOf(
                                         OutlinedButton(
                                             onClick = {
                                                 statusMessage = setDepartureAlarm(
