@@ -2,13 +2,14 @@ package de.lippstadt.bus
 
 import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
 import java.util.Locale
 
 data class PoiCategory(
     val label: String,
-    val overpassFilter: String,
-    val extraFilters: List<String> = emptyList(),
-    val isStop: Boolean = false
+    val overpassQueries: List<String>,
+    val fallbackKeyword: String,
+    val isTransitStopSearch: Boolean = false
 )
 
 data class ParsedVoiceQuery(
@@ -29,26 +30,78 @@ private fun cleanPlaceArticle(place: String): String {
 }
 
 private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
-    if (Regex("\\b(bushaltestelle|bushaltestellen|haltestelle|haltestellen)\\b").containsMatchIn(lowerText) &&
-        Regex("\\b(nächste|naechste|nächsten|naechsten|nähe|naehe|hier)\\b").containsMatchIn(lowerText)) {
-        val match = Regex("\\b(bushaltestelle|bushaltestellen|haltestelle|haltestellen)\\b").find(lowerText)!!
-        return PoiCategory("Bushaltestelle", """["highway"="bus_stop"]""",
-            listOf("""["public_transport"="platform"]["bus"="yes"]"""), isStop = true) to match.value
-    }
     val map = listOf(
-        Regex("\\b(zahnarzt|zahnärztin|zahnaerztin|zahnarztpraxis)\\b") to PoiCategory("Zahnarzt", """[~"^(amenity|healthcare)$"~"^(dentist)$"]"""),
-        Regex("\\b(arzt|ärztin|aerztin|arztpraxis|hausarzt|hausärztin|hausaerztin|ärzte|aerzte)\\b") to PoiCategory("Arztpraxis", """[~"^(amenity|healthcare)$"~"^(doctors|doctor|clinic)$"]"""),
-        Regex("\\b(bäckerei|baeckerei|bäcker|baecker|brötchen|broetchen)\\b") to PoiCategory("Bäckerei", """["shop"="bakery"]"""),
-        Regex("\\b(pommesbude|pommes|imbiss|currywurst|fritten|snack)\\b") to PoiCategory("Imbiss / Pommesbude", """["amenity"="fast_food"]"""),
-        Regex("\\b(döner|doener|kebab)\\b") to PoiCategory("Döner / Imbiss", """["amenity"="fast_food"]"""),
-        Regex("\\b(apotheke)\\b") to PoiCategory("Apotheke", """["amenity"="pharmacy"]"""),
-        Regex("\\b(supermarkt|edeka|rewe|aldi|lidl|penny|netto|kaufland|einkaufen)\\b") to PoiCategory("Supermarkt", """["shop"="supermarket"]"""),
-        Regex("\\b(geldautomat|bankautomat|sparkasse|volksbank|bank)\\b") to PoiCategory("Geldautomat / Bank", """["amenity"~"atm|bank"]"""),
-        Regex("\\b(café|cafe|kaffee)\\b") to PoiCategory("Café", """["amenity"="cafe"]"""),
-        Regex("\\b(restaurant|essen)\\b") to PoiCategory("Restaurant", """["amenity"="restaurant"]"""),
-        Regex("\\b(toilette|wc|klo)\\b") to PoiCategory("Toilette / WC", """["amenity"="toilets"]"""),
-        Regex("\\b(tankstelle|tanken)\\b") to PoiCategory("Tankstelle", """["amenity"="fuel"]"""),
-        Regex("\\b(paketshop|post|dhl|packstation)\\b") to PoiCategory("Post / Packstation", """["amenity"~"post_office|parcel_locker"]""")
+        Regex("\\b(bushaltestelle|haltestelle|busstop|station)\\b") to PoiCategory(
+            label = "Nächste Haltestelle",
+            overpassQueries = listOf("""["highway"="bus_stop"]""", """["public_transport"="platform"]""", """["railway"~"station|halt|tram_stop"]"""),
+            fallbackKeyword = "Haltestelle",
+            isTransitStopSearch = true
+        ),
+        Regex("\\b(arzt|ärzte|aerzte|doktor|arztpraxis|praxis|klinik)\\b") to PoiCategory(
+            label = "Arzt / Praxis",
+            overpassQueries = listOf("""["amenity"="doctors"]""", """["amenity"="clinic"]""", """["healthcare"="doctor"]"""),
+            fallbackKeyword = "Arzt"
+        ),
+        Regex("\\b(spätkauf|spaetkauf|späti|spaeti|kiosk|trinkhalle)\\b") to PoiCategory(
+            label = "Spätkauf / Kiosk",
+            overpassQueries = listOf("""["shop"="convenience"]""", """["shop"="kiosk"]"""),
+            fallbackKeyword = "Spätkauf"
+        ),
+        Regex("\\b(bäckerei|baeckerei|bäcker|baecker|brötchen|broetchen)\\b") to PoiCategory(
+            label = "Bäckerei",
+            overpassQueries = listOf("""["shop"="bakery"]""", """["amenity"="cafe"]["cuisine"~"bakery|pastry"]"""),
+            fallbackKeyword = "Bäckerei"
+        ),
+        Regex("\\b(pommesbude|pommes|imbiss|currywurst|fritten|snack)\\b") to PoiCategory(
+            label = "Imbiss / Pommesbude",
+            overpassQueries = listOf("""["amenity"="fast_food"]"""),
+            fallbackKeyword = "Imbiss"
+        ),
+        Regex("\\b(döner|doener|kebab)\\b") to PoiCategory(
+            label = "Döner / Imbiss",
+            overpassQueries = listOf("""["amenity"="fast_food"]"""),
+            fallbackKeyword = "Döner"
+        ),
+        Regex("\\b(apotheke)\\b") to PoiCategory(
+            label = "Apotheke",
+            overpassQueries = listOf("""["amenity"="pharmacy"]"""),
+            fallbackKeyword = "Apotheke"
+        ),
+        Regex("\\b(supermarkt|edeka|rewe|aldi|lidl|penny|netto|kaufland|einkaufen)\\b") to PoiCategory(
+            label = "Supermarkt",
+            overpassQueries = listOf("""["shop"="supermarket"]""", """["shop"="discount"]"""),
+            fallbackKeyword = "Supermarkt"
+        ),
+        Regex("\\b(geldautomat|bankautomat|sparkasse|volksbank|bank)\\b") to PoiCategory(
+            label = "Geldautomat / Bank",
+            overpassQueries = listOf("""["amenity"="atm"]""", """["amenity"="bank"]"""),
+            fallbackKeyword = "Bank"
+        ),
+        Regex("\\b(café|cafe|kaffee)\\b") to PoiCategory(
+            label = "Café",
+            overpassQueries = listOf("""["amenity"="cafe"]"""),
+            fallbackKeyword = "Café"
+        ),
+        Regex("\\b(restaurant|essen)\\b") to PoiCategory(
+            label = "Restaurant",
+            overpassQueries = listOf("""["amenity"="restaurant"]"""),
+            fallbackKeyword = "Restaurant"
+        ),
+        Regex("\\b(toilette|wc|klo)\\b") to PoiCategory(
+            label = "Toilette / WC",
+            overpassQueries = listOf("""["amenity"="toilets"]"""),
+            fallbackKeyword = "WC"
+        ),
+        Regex("\\b(tankstelle|tanken)\\b") to PoiCategory(
+            label = "Tankstelle",
+            overpassQueries = listOf("""["amenity"="fuel"]"""),
+            fallbackKeyword = "Tankstelle"
+        ),
+        Regex("\\b(paketshop|post|dhl|packstation)\\b") to PoiCategory(
+            label = "Post / Packstation",
+            overpassQueries = listOf("""["amenity"="post_office"]""", """["amenity"="parcel_locker"]"""),
+            fallbackKeyword = "Post"
+        )
     )
     for ((regex, cat) in map) {
         val m = regex.find(lowerText)
@@ -57,20 +110,16 @@ private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
     return null
 }
 
-private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String, Pair<Long, String>?> {
+private fun extractFutureDateTime(rawText: String): Pair<String, Pair<Long, String>?> {
     var working = rawText
     val cal = Calendar.getInstance(Locale.GERMANY)
-    cal.timeInMillis = nowMillis
-    cal.set(Calendar.MILLISECOND, 0)
+    val nowMillis = cal.timeInMillis
     var hasCustomDate = false
     var hasCustomTime = false
 
-    // 1. Relative Zeit: "in 2 Stunden", "in 30 Minuten"
     val inRelMatch = Regex("\\bin\\s+(\\d+)\\s*(stunde|stunden|std|minute|minuten|min)\\b", RegexOption.IGNORE_CASE).find(working)
     if (inRelMatch != null) {
-        val amount = inRelMatch.groupValues[1].toIntOrNull()
-            ?: throw IllegalArgumentException("Die Zeitangabe ist zu groß.")
-        require(amount in 0..525600) { "Die Zeitangabe ist zu groß." }
+        val amount = inRelMatch.groupValues[1].toIntOrNull() ?: 0
         val unit = inRelMatch.groupValues[2].lowercase(Locale.GERMANY)
         if (unit.startsWith("std") || unit.startsWith("stunde")) {
             cal.add(Calendar.HOUR_OF_DAY, amount)
@@ -82,7 +131,6 @@ private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String
         return working.trim() to (cal.timeInMillis to fmt.format(cal.time))
     }
 
-    // 2. Wochentage ("Montag", "am Dienstag", "nächsten Freitag")
     val weekdays = mapOf(
         "montag" to Calendar.MONDAY,
         "dienstag" to Calendar.TUESDAY,
@@ -100,14 +148,13 @@ private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String
         if (targetDow != null) {
             val currentDow = cal.get(Calendar.DAY_OF_WEEK)
             var daysDiff = (targetDow - currentDow + 7) % 7
-            if (daysDiff == 0) daysDiff = 7 // Nächster gleichnamiger Wochentag
+            if (daysDiff == 0) daysDiff = 7
             cal.add(Calendar.DAY_OF_YEAR, daysDiff)
             hasCustomDate = true
             working = working.replace(dayMatch.value, " ")
         }
     }
 
-    // 3. "übermorgen" / "morgen" / "heute"
     val relDayRegex = Regex("\\b(übermorgen|uebermorgen|morgen|heute)\\b", RegexOption.IGNORE_CASE)
     val relDayMatch = relDayRegex.find(working)
     if (relDayMatch != null) {
@@ -127,38 +174,26 @@ private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String
         working = working.replace(relDayMatch.value, " ")
     }
 
-    // 4. Konkretes Datum ("am 25.11." oder "25.11.2026")
-    val dateRegex = Regex("\\b(?:am\\s+)?(\\d{1,2})\\.(\\d{1,2})\\.(?:(\\d{4}|\\d{2})(?!\\d))?(?!\\d)")
+    val dateRegex = Regex("\\b(?:am\\s+)?(\\d{1,2})\\.(\\d{1,2})\\.(?:(\\d{2,4}))?\\b")
     val dateMatch = dateRegex.find(working)
     if (dateMatch != null) {
         val d = dateMatch.groupValues[1].toIntOrNull()
         val m = dateMatch.groupValues[2].toIntOrNull()
         val yRaw = dateMatch.groupValues[3]
         if (d != null && m != null && d in 1..31 && m in 1..12) {
-            val year = yRaw.toIntOrNull()?.let { if (it < 100) 2000 + it else it }
-                ?: cal.get(Calendar.YEAR)
-            val date = (cal.clone() as Calendar).apply {
-                clear()
-                isLenient = false
-                set(year, m - 1, d, 8, 0, 0)
-            }
-            try {
-                date.timeInMillis // Calendar otherwise normalizes e.g. 31 February silently.
-            } catch (_: IllegalArgumentException) {
-                throw IllegalArgumentException("Ungültiges Datum: ${dateMatch.value}")
-            }
-            cal.set(Calendar.DAY_OF_MONTH, 1)
-            cal.set(Calendar.YEAR, year)
             cal.set(Calendar.MONTH, m - 1)
             cal.set(Calendar.DAY_OF_MONTH, d)
+            if (yRaw.isNotBlank()) {
+                val yInt = yRaw.toInt()
+                cal.set(Calendar.YEAR, if (yInt < 100) 2000 + yInt else yInt)
+            } else if (cal.timeInMillis < nowMillis - 12 * 3600 * 1000L) {
+                cal.add(Calendar.YEAR, 1)
+            }
             hasCustomDate = true
             working = working.replace(dateMatch.value, " ")
-        } else {
-            throw IllegalArgumentException("Ungültiges Datum: ${dateMatch.value}")
         }
     }
 
-    // 5. Uhrzeit ("um 9 Uhr", "um 14:30 Uhr", "ab 8:15", "9 Uhr 30")
     val timeRegex = Regex("\\b(?:um|ab|gegen)\\s+(\\d{1,2})(?::(\\d{2}))?\\s*(?:uhr(?:\\s*(\\d{1,2}))?)?\\b|\\b(\\d{1,2}):(\\d{2})\\s*(?:uhr)?\\b|\\b(\\d{1,2})\\s*uhr(?:\\s*(\\d{1,2}))?\\b", RegexOption.IGNORE_CASE)
     val timeMatch = timeRegex.find(working)
     if (timeMatch != null) {
@@ -172,8 +207,6 @@ private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String
             cal.set(Calendar.SECOND, 0)
             hasCustomTime = true
             working = working.replace(timeMatch.value, " ")
-        } else {
-            throw IllegalArgumentException("Ungültige Uhrzeit: ${timeMatch.value}")
         }
     }
 
@@ -181,45 +214,32 @@ private fun extractFutureDateTime(rawText: String, nowMillis: Long): Pair<String
         return rawText to null
     }
 
-    // Falls nur ein Wochentag/Datum ohne Uhrzeit genannt wurde -> Standard 08:00 Uhr setzen
     if (hasCustomDate && !hasCustomTime) {
-        if (relDayMatch?.value.equals("heute", ignoreCase = true)) {
-            cal.timeInMillis = nowMillis
-        } else {
-            cal.set(Calendar.HOUR_OF_DAY, 8)
-            cal.set(Calendar.MINUTE, 0)
-            cal.set(Calendar.SECOND, 0)
-        }
+        cal.set(Calendar.HOUR_OF_DAY, 8)
+        cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 0)
     }
 
-    if (dateMatch != null && dateMatch.groupValues[3].isBlank() && cal.timeInMillis < nowMillis) {
-        cal.add(Calendar.YEAR, 1)
-    }
-
-    // Falls nur eine Uhrzeit heute genannt wurde, die schon vorbei ist -> auf morgen schieben
-    if (!hasCustomDate && hasCustomTime && cal.timeInMillis < nowMillis) {
+    if (!hasCustomDate && hasCustomTime && cal.timeInMillis < nowMillis - 5 * 60 * 1000L) {
         cal.add(Calendar.DAY_OF_YEAR, 1)
     }
 
-    require(cal.timeInMillis >= nowMillis || (!hasCustomDate && !hasCustomTime)) {
-        "Der gewünschte Zeitpunkt liegt in der Vergangenheit."
-    }
     val cleanedText = working.replace(Regex("\\s{2,}"), " ").trim()
     val labelFmt = SimpleDateFormat("EEEE, dd.MM. 'ab' HH:mm 'Uhr'", Locale.GERMANY)
-    return cleanedText to (cal.timeInMillis to labelFmt.format(cal.time))
+    return cleanedText to (cal.timeInMillis to labelFmt.format(Date(cal.timeInMillis)))
 }
 
-fun parseNaturalTransitRequest(rawInput: String, nowMillis: Long = System.currentTimeMillis()): ParsedVoiceQuery {
-    val (textWithoutTime, parsedTimeInfo) = extractFutureDateTime(rawInput.trim().trimEnd('?', '!'), nowMillis)
+fun parseNaturalTransitRequest(rawInput: String): ParsedVoiceQuery {
+    val (textWithoutTime, parsedTimeInfo) = extractFutureDateTime(rawInput.trim().trimEnd('?', '!', '.'))
     val targetMillis = parsedTimeInfo?.first
     val timeLabel = parsedTimeInfo?.second
 
-    val text = textWithoutTime.trim().trimEnd('.')
+    val text = textWithoutTime.trim()
     val lower = text.lowercase(Locale.GERMANY)
 
     val (modeCode, modeLabel) = when {
         Regex("\\b(u-bahn|ubahn|u bahn)\\b").containsMatchIn(lower) -> "SUBWAY" to "U-Bahn"
-        Regex("\\b(s-bahn|sbahn|s bahn)(?!hof)\\b").containsMatchIn(lower) -> "SUBURBAN" to "S-Bahn"
+        Regex("\\b(s-bahn|sbahn|s bahn)\\b").containsMatchIn(lower) -> "SUBURBAN" to "S-Bahn"
         Regex("\\b(tram|straßenbahn|strassenbahn)\\b").containsMatchIn(lower) -> "TRAM" to "Tram"
         Regex("\\b(zug|bahn|regionalbahn|re|rb)\\b").containsMatchIn(lower) -> "REGIONAL_RAIL" to "Regionalbahn"
         Regex("\\b(bus|stadtbus|nachtbus)\\b").containsMatchIn(lower) -> "BUS" to "Bus"
@@ -232,7 +252,7 @@ fun parseNaturalTransitRequest(rawInput: String, nowMillis: Long = System.curren
         val afterKeyword = lower.substringAfter(matchedKeyword).trim()
         val anchorMatch = Regex("^(?:am|an\\s+der|an\\s+dem|beim|bei\\s+der|bei\\s+dem|in|nahe)\\s+(.+)$", RegexOption.IGNORE_CASE)
             .find(afterKeyword)
-        val anchorRaw = anchorMatch?.groupValues?.get(1)?.trim()?.trimEnd('.', '?', '!')
+        val anchorRaw = anchorMatch?.groupValues?.get(1)?.trim()
         val isNearbyPhrase = anchorRaw == null ||
                 Regex("^(der\\s+nähe|der\\s+naehe|nähe|naehe|hier|mir|umgebung)$", RegexOption.IGNORE_CASE)
                     .matches(anchorRaw)
@@ -251,15 +271,15 @@ fun parseNaturalTransitRequest(rawInput: String, nowMillis: Long = System.curren
     }
 
     val fromToRegex = Regex(
-        "\\b(?:von|ab)\\s+(.+?)\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
+        "(?:von|ab)\\s+.+?\\s+(?:in\\s+richtung|richtung|nach|zum|zur|zu)\\s+(.+)$",
         RegexOption.IGNORE_CASE
     )
     val fromToMatch = fromToRegex.find(text)
     if (fromToMatch != null) {
-        val rawDest = cleanPlaceArticle(fromToMatch.groupValues[2])
+        val rawDest = cleanPlaceArticle(fromToMatch.groupValues[1])
         if (rawDest.isNotBlank()) {
             return ParsedVoiceQuery(
-                origin = cleanPlaceArticle(fromToMatch.groupValues[1]),
+                origin = null,
                 destination = rawDest,
                 preferredMode = modeCode,
                 modeDisplayName = modeLabel,
@@ -281,7 +301,7 @@ fun parseNaturalTransitRequest(rawInput: String, nowMillis: Long = System.curren
     } else {
         text.replace(
             Regex(
-                "^(wie\\s+komme\\s+ich\\s+|wann\\s+fährt\\s+|wann\\s+faehrt\\s+|fährt\\s+ein\\s+|faehrt\\s+ein\\s+|nächster\\s+|naechster\\s+|nächste\\s+|naechste\\s+|mit\\s+dem\\s+|mit\\s+der\\s+|bus\\s+|u-bahn\\s+|ubahn\\s+|s-bahn\\s+|sbahn\\s+|ein\\s+)+",
+                "^(wie\\s+komme\\s+ich\\s+|wo\\s+ist\\s+(?:hier\\s+)?(?:die\\s+|der\\s+)?(?:nächste\\s+|naechste\\s+)?|wann\\s+fährt\\s+|wann\\s+faehrt\\s+|fährt\\s+ein\\s+|faehrt\\s+ein\\s+|nächster\\s+|naechster\\s+|nächste\\s+|naechste\\s+|mit\\s+dem\\s+|mit\\s+der\\s+|bus\\s+|u-bahn\\s+|ubahn\\s+|s-bahn\\s+|sbahn\\s+|ein\\s+)+",
                 RegexOption.IGNORE_CASE
             ),
             ""
@@ -303,21 +323,4 @@ fun parseNaturalTransitRequest(rawInput: String, nowMillis: Long = System.curren
         targetTimeMillis = targetMillis,
         timeDisplayLabel = timeLabel
     )
-}
-
-/** Keep destination meaning ahead of proximity and generic stop preference. */
-internal fun normalizedPlaceName(value: String): String = value.lowercase(Locale.GERMANY)
-    .replace("ß", "ss").replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
-    .replace(Regex("s[- ]?bahnhof"), "s ")
-    .replace(Regex("u[- ]?bahnhof"), "u ")
-    .replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
-
-internal fun placeNameMatchScore(query: String, name: String): Int {
-    val wanted = normalizedPlaceName(query).split(" ").filter { it.isNotBlank() }
-    val actual = normalizedPlaceName(name).split(" ").filter { it.isNotBlank() }
-    if (wanted.isEmpty()) return 0
-    if (wanted == actual) return 1000
-    val matched = wanted.count { it in actual }
-    return matched * 100 / wanted.size + (if (matched == wanted.size) 100 else 0) +
-        (if (actual.take(wanted.size) == wanted) 50 else 0)
 }
