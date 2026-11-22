@@ -1333,7 +1333,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
     }
-
+}
 
 suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double): String? =
     withContext(Dispatchers.IO) {
