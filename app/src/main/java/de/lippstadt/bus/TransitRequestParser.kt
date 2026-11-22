@@ -42,15 +42,65 @@ private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
             overpassQueries = listOf("""["amenity"="doctors"]""", """["amenity"="clinic"]""", """["healthcare"="doctor"]"""),
             fallbackKeyword = "Arzt"
         ),
+        Regex("\\b(apotheke|apotheken)\\b") to PoiCategory(
+            label = "Apotheke",
+            overpassQueries = listOf("""["amenity"="pharmacy"]"""),
+            fallbackKeyword = "Apotheke"
+        ),
+        Regex("\\b(drogerie|dm|rossmann|müller|mueller|budni)\\b") to PoiCategory(
+            label = "Drogerie",
+            overpassQueries = listOf("""["shop"="chemist"]"""),
+            fallbackKeyword = "Drogerie"
+        ),
         Regex("\\b(spätkauf|spaetkauf|späti|spaeti|kiosk|trinkhalle)\\b") to PoiCategory(
             label = "Spätkauf / Kiosk",
             overpassQueries = listOf("""["shop"="convenience"]""", """["shop"="kiosk"]"""),
             fallbackKeyword = "Spätkauf"
         ),
+        Regex("\\b(frisör|frisoer|friseur|barbershop|haarschnitt)\\b") to PoiCategory(
+            label = "Frisör / Friseur",
+            overpassQueries = listOf("""["shop"="hairdresser"]"""),
+            fallbackKeyword = "Friseur"
+        ),
         Regex("\\b(bäckerei|baeckerei|bäcker|baecker|brötchen|broetchen)\\b") to PoiCategory(
             label = "Bäckerei",
             overpassQueries = listOf("""["shop"="bakery"]""", """["amenity"="cafe"]["cuisine"~"bakery|pastry"]"""),
             fallbackKeyword = "Bäckerei"
+        ),
+        Regex("\\b(supermarkt|edeka|rewe|aldi|lidl|penny|netto|kaufland|einkaufen)\\b") to PoiCategory(
+            label = "Supermarkt",
+            overpassQueries = listOf("""["shop"="supermarket"]""", """["shop"="discount"]"""),
+            fallbackKeyword = "Supermarkt"
+        ),
+        Regex("\\b(toilette|toiletten|wc|klo)\\b") to PoiCategory(
+            label = "Öffentliche Toilette / WC",
+            overpassQueries = listOf("""["amenity"="toilets"]"""),
+            fallbackKeyword = "Toilette"
+        ),
+        Regex("\\b(kneipe|kneipen|bar|pub|biergarten)\\b") to PoiCategory(
+            label = "Kneipe / Bar",
+            overpassQueries = listOf("""["amenity"="pub"]""", """["amenity"="bar"]""", """["amenity"="biergarten"]"""),
+            fallbackKeyword = "Kneipe"
+        ),
+        Regex("\\b(inder|indisch|indisches|indischer)\\b") to PoiCategory(
+            label = "Indisches Restaurant",
+            overpassQueries = listOf("""["amenity"="restaurant"]["cuisine"~"indian"]"""),
+            fallbackKeyword = "Indisches Restaurant"
+        ),
+        Regex("\\b(asiate|asiatisch|asiatisches|asiatischer|chinese|chinesisch|thai|vietnamese|sushi)\\b") to PoiCategory(
+            label = "Asiatisches Restaurant",
+            overpassQueries = listOf("""["amenity"="restaurant"]["cuisine"~"asian|chinese|thai|vietnamese|japanese|sushi"]"""),
+            fallbackKeyword = "Asiatisches Restaurant"
+        ),
+        Regex("\\b(deutsche\\s+küche|deutsche\\s+kueche|gutbürgerlich|gutbuergerlich|brauhaus|wirtshaus)\\b") to PoiCategory(
+            label = "Deutsche Küche",
+            overpassQueries = listOf("""["amenity"="restaurant"]["cuisine"~"german|bavarian|regional"]"""),
+            fallbackKeyword = "Restaurant"
+        ),
+        Regex("\\b(restaurant|essen)\\b") to PoiCategory(
+            label = "Restaurant",
+            overpassQueries = listOf("""["amenity"="restaurant"]"""),
+            fallbackKeyword = "Restaurant"
         ),
         Regex("\\b(pommesbude|pommes|imbiss|currywurst|fritten|snack)\\b") to PoiCategory(
             label = "Imbiss / Pommesbude",
@@ -62,16 +112,6 @@ private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
             overpassQueries = listOf("""["amenity"="fast_food"]"""),
             fallbackKeyword = "Döner"
         ),
-        Regex("\\b(apotheke)\\b") to PoiCategory(
-            label = "Apotheke",
-            overpassQueries = listOf("""["amenity"="pharmacy"]"""),
-            fallbackKeyword = "Apotheke"
-        ),
-        Regex("\\b(supermarkt|edeka|rewe|aldi|lidl|penny|netto|kaufland|einkaufen)\\b") to PoiCategory(
-            label = "Supermarkt",
-            overpassQueries = listOf("""["shop"="supermarket"]""", """["shop"="discount"]"""),
-            fallbackKeyword = "Supermarkt"
-        ),
         Regex("\\b(geldautomat|bankautomat|sparkasse|volksbank|bank)\\b") to PoiCategory(
             label = "Geldautomat / Bank",
             overpassQueries = listOf("""["amenity"="atm"]""", """["amenity"="bank"]"""),
@@ -81,16 +121,6 @@ private fun detectPoiCategory(lowerText: String): Pair<PoiCategory, String>? {
             label = "Café",
             overpassQueries = listOf("""["amenity"="cafe"]"""),
             fallbackKeyword = "Café"
-        ),
-        Regex("\\b(restaurant|essen)\\b") to PoiCategory(
-            label = "Restaurant",
-            overpassQueries = listOf("""["amenity"="restaurant"]"""),
-            fallbackKeyword = "Restaurant"
-        ),
-        Regex("\\b(toilette|wc|klo)\\b") to PoiCategory(
-            label = "Toilette / WC",
-            overpassQueries = listOf("""["amenity"="toilets"]"""),
-            fallbackKeyword = "WC"
         ),
         Regex("\\b(tankstelle|tanken)\\b") to PoiCategory(
             label = "Tankstelle",
