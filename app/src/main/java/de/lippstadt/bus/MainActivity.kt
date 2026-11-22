@@ -431,7 +431,6 @@ fun LiveCompassArrowCard(
     }
 }
 
-@Composable
 @SuppressLint("MissingPermission")
 @Composable
 fun TransitFinderScreen(externalVoiceTrigger: Int) {
