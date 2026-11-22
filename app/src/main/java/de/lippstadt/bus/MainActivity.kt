@@ -1038,7 +1038,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                listOf(
+                                    listOf(3, 5, 10).forEach { mins ->
                                         OutlinedButton(
                                             onClick = {
                                                 statusMessage = setDepartureAlarm(
@@ -1333,7 +1333,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
     }
-}
+
 
 suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double): String? =
     withContext(Dispatchers.IO) {
