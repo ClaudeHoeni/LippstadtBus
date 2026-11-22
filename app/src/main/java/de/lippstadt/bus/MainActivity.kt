@@ -355,7 +355,7 @@ fun LiveCompassArrowCard(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(84.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primary)
                         .clickable { onOpenMaps(tLat, tLon, targetName) },
@@ -363,7 +363,7 @@ fun LiveCompassArrowCard(
                 ) {
                     Text(
                         text = "⬆",
-                        fontSize = 30.sp,
+                        fontSize = 48.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.rotate(relativeArrowAngle)
@@ -1538,12 +1538,22 @@ suspend fun searchTransitStopsAndPlaces(
         }
 
         fun matchScore(c: GeoCandidate): Int {
+            val qLower = cleanQuery.lowercase(Locale.GERMANY)
             val nameLower = c.name.lowercase(Locale.GERMANY)
             val fullLower = "${c.name} ${c.areaLabel}".lowercase(Locale.GERMANY)
             val nameWordHits = queryWords.count { w -> nameLower.contains(w.lowercase(Locale.GERMANY)) }
             val areaWordHits = queryWords.count { w -> fullLower.contains(w.lowercase(Locale.GERMANY)) }
-            val exactBonus = if (nameLower.contains(cleanQuery.lowercase(Locale.GERMANY))) 25 else 0
-            return exactBonus + (nameWordHits * 15) + (areaWordHits * 8) + (if (c.isStop) 5 else if (c.isStreet) 2 else 0)
+            val exactBonus = when {
+                nameLower == qLower -> 40
+                nameLower.startsWith(qLower) -> 28
+                nameLower.contains(qLower) -> 18
+                else -> 0
+            }
+            val nameTokens = nameLower.split(Regex("[^a-zäöüß0-9]+")).filter { it.length >= 3 }
+            val queryTokens = qLower.split(Regex("[^a-zäöüß0-9]+")).filter { it.length >= 3 }
+            val extraTokens = nameTokens.count { tok -> queryTokens.none { qTok -> tok.contains(qTok) || qTok.contains(tok) } }
+            val stopBonus = if (c.isStop) 8 else if (c.isStreet) 2 else 0
+            return exactBonus + (nameWordHits * 15) + (areaWordHits * 6) + stopBonus - (extraTokens * 8)
         }
 
         val sorted = rawCandidates.sortedWith(
