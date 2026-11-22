@@ -1,4 +1,4 @@
-package de.lippstadt.bus
+﻿package de.lippstadt.bus
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -639,7 +639,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     Regex("\b(supermarkt|bäcker|baecker|bäckerei|baeckerei|spätkauf|spaetkauf|kiosk|apotheke|arzt|drogerie|aldi|lidl|rewe|edeka|penny|netto)\b").containsMatchIn(lowerQuery)
 
                 val combinedText = "$rawText ${parsed.destination}".lowercase(Locale.GERMANY)
-                val isLocalPlaceQuery = parsed.poiCategory != null ||
                     listOf(
                         "supermarkt", "bäcker", "baecker", "bäckerei", "baeckerei",
                         "spätkauf", "spaetkauf", "kiosk", "apotheke", "arzt",
