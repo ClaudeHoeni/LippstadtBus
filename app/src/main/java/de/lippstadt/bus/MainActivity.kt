@@ -656,11 +656,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                         anchorLabel = anchor.name
                     }
 
-                    statusMessage = "Suche ${parsed.poiCategory.label} bei $anchorLabel..."
+                    statusMessage = "Suche ${parsed.poiCategory?.label} bei $anchorLabel..."
                     searchNearbyPoisRobust(
                         centerLat = centerLat,
                         centerLon = centerLon,
-                        category = parsed.poiCategory,
+                        category = parsed.poiCategory!!,
                         cityContext = cityContextName,
                         radiusMeters = if (parsed.poiAnchorPlace != null) 1200 else 2500
                     )
