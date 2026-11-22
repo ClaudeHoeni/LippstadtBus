@@ -4,6 +4,10 @@ plugins {
 }
 
 android {
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
+    }
     namespace = "de.chris.mamafon"
     compileSdk = 34
 

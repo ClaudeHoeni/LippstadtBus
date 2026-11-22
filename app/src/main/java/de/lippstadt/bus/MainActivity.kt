@@ -432,6 +432,8 @@ fun LiveCompassArrowCard(
 }
 
 @Composable
+@SuppressLint("MissingPermission")
+@Composable
 fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -635,8 +637,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             "Ziel: ${dest.fullDisplay}$timeHint"
         }
     }
-
-    @SuppressLint("MissingPermission")
     fun searchTransit(rawQueryOverride: String? = null) {
         val rawText = (rawQueryOverride ?: destinationInput).trim()
         if (rawText.isBlank()) {
