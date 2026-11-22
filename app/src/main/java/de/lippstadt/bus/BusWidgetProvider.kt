@@ -1,6 +1,7 @@
 package de.lippstadt.bus
 
-import de.lippstadt.bus.R
+import de.chris.mamafon.R
+
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
