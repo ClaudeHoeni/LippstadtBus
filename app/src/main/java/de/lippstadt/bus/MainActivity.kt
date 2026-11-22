@@ -1322,7 +1322,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     }
 }
 
-@Suppress("DEPRECATION")
 suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double): String? =
     withContext(Dispatchers.IO) {
         try {
