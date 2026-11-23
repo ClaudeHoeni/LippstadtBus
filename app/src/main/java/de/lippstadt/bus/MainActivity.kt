@@ -1,19 +1,15 @@
-﻿package de.lippstadt.bus
+package de.lippstadt.bus
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.location.Geocoder
 import android.location.Location
-import android.net.Uri
 import android.os.Bundle
-import android.os.Looper
+import android.net.Uri
 import android.provider.AlarmClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -25,34 +21,28 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -90,10 +80,6 @@ data class RouteLegInfo(
     val direction: String,
     val fromStop: String,
     val toStop: String,
-    val fromLat: Double?,
-    val fromLon: Double?,
-    val toLat: Double?,
-    val toLon: Double?,
     val startTime: String,
     val endTime: String,
     val delayMinutes: Int,
@@ -112,8 +98,6 @@ data class TransitConnection(
     val firstDelayMinutes: Int,
     val totalDurationMinutes: Int,
     val transfersCount: Int,
-    val totalWalkMeters: Int,
-    val isWalkOnly: Boolean = false,
     val legs: List<RouteLegInfo>
 )
 
@@ -121,46 +105,6 @@ data class AppUpdateInfo(
     val title: String,
     val downloadUrl: String
 )
-
-private fun setDepartureAlarm(context: Context, departureMillis: Long, minutesBefore: Int, label: String): String {
-    val alarmMillis = departureMillis - minutesBefore * 60_000L
-    val cal = Calendar.getInstance(Locale.GERMANY).apply {
-        timeInMillis = alarmMillis
-    }
-    val hour = cal.get(Calendar.HOUR_OF_DAY)
-    val minute = cal.get(Calendar.MINUTE)
-    val formattedAlarm = String.format(Locale.GERMANY, "%02d:%02d", hour, minute)
-
-    val setAlarmIntent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
-        putExtra(AlarmClock.EXTRA_HOUR, hour)
-        putExtra(AlarmClock.EXTRA_MINUTES, minute)
-        putExtra(AlarmClock.EXTRA_MESSAGE, label)
-        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
-    }
-
-    return try {
-        val resolved = setAlarmIntent.resolveActivity(context.packageManager)
-        if (resolved != null) {
-            context.startActivity(setAlarmIntent)
-            "Wecker auf $formattedAlarm Uhr ($minutesBefore Min. vor Abfahrt) gestellt."
-        } else {
-            val showAlarmsIntent = Intent(AlarmClock.ACTION_SHOW_ALARMS)
-            if (showAlarmsIntent.resolveActivity(context.packageManager) != null) {
-                context.startActivity(showAlarmsIntent)
-                "Uhr-App geöffnet – Wecker auf $formattedAlarm Uhr stellen ($minutesBefore Min. vorher)."
-            } else {
-                "Keine Uhr-App gefunden (Erinnerung: $formattedAlarm Uhr, $minutesBefore Min. vorher)."
-            }
-        }
-    } catch (_: Exception) {
-        try {
-            context.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS))
-            "Uhr-App geöffnet – Wecker auf $formattedAlarm Uhr stellen ($minutesBefore Min. vorher)."
-        } catch (_: Exception) {
-            "Wecker konnte nicht automatisch gestellt werden (Zielzeit: $formattedAlarm Uhr)."
-        }
-    }
-}
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -229,16 +173,6 @@ private fun formatTimeForSpeech(hhMm: String): String {
 
 fun buildSpokenSummary(conn: TransitConnection): String {
     val sb = StringBuilder()
-    if (conn.isWalkOnly) {
-        val walkLeg = conn.legs.firstOrNull()
-        val dist = walkLeg?.distanceMeters ?: conn.totalWalkMeters
-        val mins = walkLeg?.durationMinutes ?: conn.totalDurationMinutes
-        val target = walkLeg?.toStop ?: conn.firstDirection
-        sb.append("Das Ziel $target ist zu Fuß erreichbar. ")
-        sb.append("Entfernung circa $dist Meter, Gehzeit etwa $mins Minuten.")
-        return sb.toString()
-    }
-
     val delayNote = if (conn.firstDelayMinutes > 0) {
         ", aktuell ${conn.firstDelayMinutes} Minuten Verspätung"
     } else {
@@ -267,166 +201,6 @@ fun buildSpokenSummary(conn: TransitConnection): String {
     return sb.toString()
 }
 
-private fun openStopInMaps(context: Context, lat: Double?, lon: Double?, label: String) {
-    try {
-        val uri = if (lat != null && lon != null) {
-            Uri.parse("geo:$lat,$lon?q=$lat,$lon(${Uri.encode(label)})")
-        } else {
-            Uri.parse("geo:0,0?q=${Uri.encode(label)}")
-        }
-        val intent = Intent(Intent.ACTION_VIEW, uri).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(intent)
-    } catch (_: Exception) {
-    }
-}
-
-private fun bearingDegreesBetween(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
-    val results = FloatArray(2)
-    Location.distanceBetween(lat1, lon1, lat2, lon2, results)
-    val initialBearing = results[1]
-    return (initialBearing + 360f) % 360f
-}
-
-@Composable
-fun LiveCompassArrowCard(
-    userLat: Double?,
-    userLon: Double?,
-    stopTarget: Triple<String, Double, Double>?,
-    destTarget: Triple<String, Double, Double>?,
-    onOpenMaps: (Double, Double, String) -> Unit
-) {
-    val context = LocalContext.current
-    var preferFirstStop by remember { mutableStateOf(false) }
-
-    LaunchedEffect(destTarget, stopTarget) {
-        preferFirstStop = destTarget == null && stopTarget != null
-    }
-
-    val shownTarget = if (preferFirstStop && stopTarget != null) stopTarget else (destTarget ?: stopTarget)
-    if (userLat == null || userLon == null || shownTarget == null) return
-
-    var deviceAzimuth by remember { mutableStateOf(0f) }
-    var hasCompassSensor by remember { mutableStateOf(true) }
-
-    DisposableEffect(Unit) {
-        val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-        val rotSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        if (sensorManager == null || rotSensor == null) {
-            hasCompassSensor = false
-            onDispose { }
-        } else {
-            val listener = object : SensorEventListener {
-                override fun onSensorChanged(event: SensorEvent) {
-                    val rotMatrix = FloatArray(9)
-                    val orientation = FloatArray(3)
-                    SensorManager.getRotationMatrixFromVector(rotMatrix, event.values)
-                    SensorManager.getOrientation(rotMatrix, orientation)
-                    val deg = Math.toDegrees(orientation[0].toDouble()).toFloat()
-                    deviceAzimuth = (deg + 360f) % 360f
-                }
-                override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-            }
-            sensorManager.registerListener(listener, rotSensor, SensorManager.SENSOR_DELAY_UI)
-            onDispose {
-                sensorManager.unregisterListener(listener)
-            }
-        }
-    }
-
-    val (targetName, tLat, tLon) = shownTarget
-    val distMeters = distanceMetersBetween(userLat, userLon, tLat, tLon).toInt()
-    val targetBearing = bearingDegreesBetween(userLat, userLon, tLat, tLon)
-    val relativeArrowAngle = (targetBearing - deviceAzimuth + 360f) % 360f
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-        ),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(84.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary)
-                        .clickable { onOpenMaps(tLat, tLon, targetName) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "⬆",
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.rotate(relativeArrowAngle)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (preferFirstStop && stopTarget != null) "Richtung Starthaltestelle" else "Richtung Ziel",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = targetName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    val distText = if (distMeters >= 1000) {
-                        String.format(Locale.GERMANY, "%.1f km Luftlinie", distMeters / 1000f)
-                    } else {
-                        " m entfernt"
-                    }
-                    Text(
-                        text = if (hasCompassSensor) " · Pfeil folgt Kompass" else " · Richtung °",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                OutlinedButton(
-                    onClick = { onOpenMaps(tLat, tLon, targetName) },
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Text("🗺️", fontSize = 18.sp)
-                }
-            }
-
-            if (stopTarget != null && destTarget != null && stopTarget.first != destTarget.first) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilterChip(
-                        selected = !preferFirstStop,
-                        onClick = { preferFirstStop = false },
-                        label = { Text("Direkt zum Ziel", fontSize = 12.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        selected = preferFirstStop,
-                        onClick = { preferFirstStop = true },
-                        label = { Text("Zur Haltestelle", fontSize = 12.sp) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
-    }
-}
 @Composable
 fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val context = LocalContext.current
@@ -434,20 +208,21 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
     var detectedGpsCity by remember { mutableStateOf<String?>(null) }
-    var liveUserCoords by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     var destinationInput by remember { mutableStateOf("") }
-    var statusMessage by remember { mutableStateOf("Bereit. Haltestelle, Ziel, Arzt oder Bäckerei sprechen.") }
+    var statusMessage by remember { mutableStateOf("Bereit. Haltestelle, Ziel oder Bäckerei/Imbiss eingeben.") }
     var isLoading by remember { mutableStateOf(false) }
     var isListening by remember { mutableStateOf(false) }
     var isSpeaking by remember { mutableStateOf(false) }
 
+    var searchJob by remember { mutableStateOf<Job?>(null) }
+    var isNearbySearch by remember { mutableStateOf(false) }
     var connections by remember { mutableStateOf<List<TransitConnection>>(emptyList()) }
     var selectedConnectionIndex by remember { mutableStateOf(0) }
-    var detailsDropdownExpanded by remember { mutableStateOf(false) }
     var expandedLegIndex by remember { mutableStateOf<Int?>(null) }
     var alternativesDropdownExpanded by remember { mutableStateOf(false) }
 
+    // Alternative Orte/Haltestellen (als sauberes Dropdown statt Popup-Dialog!)
     var placeCandidates by remember { mutableStateOf<List<GeoCandidate>>(emptyList()) }
     var selectedPlaceIndex by remember { mutableStateOf(0) }
     var placesDropdownExpanded by remember { mutableStateOf(false) }
@@ -485,40 +260,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         }
     }
 
-    DisposableEffect(Unit) {
-        val hasLoc = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED || ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasLoc) {
-            onDispose { }
-        } else {
-            val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 3000L)
-                .setMinUpdateIntervalMillis(1500L)
-                .build()
-            val callback = object : LocationCallback() {
-                override fun onLocationResult(result: LocationResult) {
-                    val loc = result.lastLocation ?: return
-                    liveUserCoords = loc.latitude to loc.longitude
-                }
-            }
-            fusedLocationClient.requestLocationUpdates(req, callback, Looper.getMainLooper())
-            onDispose {
-                fusedLocationClient.removeLocationUpdates(callback)
-            }
-        }
-    }
-
-    fun speakText(text: String) {
-        if (tts == null || !ttsReady) {
-            statusMessage = "Sprachausgabe auf diesem Gerät nicht verfügbar."
-            return
-        }
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "conn_summary")
-    }
-
     fun toggleSpeakConnection(conn: TransitConnection) {
         if (tts == null || !ttsReady) {
             statusMessage = "Sprachausgabe auf diesem Gerät nicht verfügbar."
@@ -528,10 +269,12 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             tts.stop()
             isSpeaking = false
         } else {
-            speakText(buildSpokenSummary(conn))
+            val summaryText = buildSpokenSummary(conn)
+            tts.speak(summaryText, TextToSpeech.QUEUE_FLUSH, null, "conn_summary")
         }
     }
 
+    @SuppressLint("MissingPermission")
     suspend fun detectCurrentLocation(): Triple<Double, Double, String>? {
         val hasLoc = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
@@ -545,7 +288,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             Priority.PRIORITY_HIGH_ACCURACY, null
         ).await() ?: fusedLocationClient.lastLocation.await() ?: return null
 
-        liveUserCoords = location.latitude to location.longitude
         val city = resolveCityNameFromCoords(context, location.latitude, location.longitude) ?: ""
         if (city.isNotBlank()) {
             detectedGpsCity = city
@@ -555,7 +297,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
     LaunchedEffect(Unit) {
         availableUpdate = checkForGitHubUpdate(context)
-        detectCurrentLocation()
+        try { detectCurrentLocation() } catch (_: Exception) { /* Search reports location failures. */ }
     }
 
     suspend fun loadRouteForPlace(
@@ -581,10 +323,11 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         connections = results
         selectedConnectionIndex = 0
-        detailsDropdownExpanded = false
         expandedLegIndex = null
         alternativesDropdownExpanded = false
-        statusMessage = if (results.isEmpty()) {
+        statusMessage = if (results.isEmpty() && isNearbySearch) {
+            "Gefunden: ${dest.fullDisplay}. Keine ÖPNV-Verbindung erforderlich oder verfügbar; Fußweg in Karte öffnen."
+        } else if (results.isEmpty()) {
             "Keine Verbindung$modeHint nach ${dest.name}$timeHint gefunden."
         } else {
             "Ziel: ${dest.fullDisplay}$timeHint"
@@ -604,17 +347,20 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             isSpeaking = false
         }
 
-        val parsed = parseNaturalTransitRequest(rawText)
-        destinationInput = parsed.destination
-
-        scope.launch {
+        val parsed = try {
+            parseNaturalTransitRequest(rawText)
+        } catch (e: IllegalArgumentException) {
+            statusMessage = e.message ?: "Datum oder Uhrzeit ungültig."
+            return
+        }
+        searchJob?.cancel()
+        isNearbySearch = parsed.poiCategory != null
+        searchJob = scope.launch {
             isLoading = true
             connections = emptyList()
             placeCandidates = emptyList()
             selectedPlaceIndex = 0
             selectedConnectionIndex = 0
-            detailsDropdownExpanded = false
-            expandedLegIndex = null
             alternativesDropdownExpanded = false
             placesDropdownExpanded = false
             activePreferredMode = parsed.preferredMode
@@ -632,40 +378,51 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                 }
 
                 val (baseLat, baseLon, cityContextName) = locData
-                activeStartCoords = baseLat to baseLon
 
-                val lowerQuery = parsed.destination.lowercase(Locale.GERMANY)
-                val isLocalPlaceQuery = parsed.poiCategory != null ||
-                    Regex("\b(supermarkt|bäcker|baecker|bäckerei|baeckerei|spätkauf|spaetkauf|kiosk|apotheke|arzt|drogerie|aldi|lidl|rewe|edeka|penny|netto)\b").containsMatchIn(lowerQuery)
-
-                val combinedText = "$rawText ${parsed.destination}".lowercase(Locale.GERMANY)
-                listOf(
-                        "supermarkt", "bäcker", "baecker", "bäckerei", "baeckerei",
-                        "spätkauf", "spaetkauf", "kiosk", "apotheke", "arzt",
-                        "drogerie", "in der nähe", "nächste", "naechste",
-                        "aldi", "lidl", "rewe", "edeka", "penny", "netto"
-                    ).any { combinedText.contains(it) }
-
-                val candidates: List<GeoCandidate> = if (isLocalPlaceQuery) {
-                    val activeCat = parsed.poiCategory
-                    val searchLabel = activeCat?.label ?: parsed.destination.ifBlank { rawText }
-                    statusMessage = "Suche nächste $searchLabel in der Nähe (ohne Bus)..."
-                    val rawPois = if (activeCat != null) {
-                        searchNearbyPoisRobust(
-                            centerLat = baseLat,
-                            centerLon = baseLon,
-                            category = activeCat,
-                            cityContext = cityContextName,
-                            radiusMeters = 2500
-                        )
-                    } else {
-                        searchTransitStopsAndPlaces(searchLabel, baseLat, baseLon, cityContextName)
+                // 1. Startpunkt bestimmen (entweder explizit "von X nach Y" oder aktuelles GPS)
+                var startLat = baseLat
+                var startLon = baseLon
+                if (!parsed.origin.isNullOrBlank()) {
+                    val originCands = searchTransitStopsAndPlaces(parsed.origin, baseLat, baseLon, cityContextName)
+                    val bestOrigin = originCands.firstOrNull()
+                    if (bestOrigin == null) {
+                        statusMessage = "Startort \"${parsed.origin}\" nicht gefunden."
+                        isLoading = false
+                        return@launch
                     }
-                    val nonStops = rawPois.filter { !it.isStop }
-                    val pool = if (nonStops.isNotEmpty()) nonStops else rawPois
-                    pool.sortedBy { distanceMetersBetween(baseLat, baseLon, it.lat, it.lon) }
+                    startLat = bestOrigin.lat
+                    startLon = bestOrigin.lon
+                }
+                activeStartCoords = startLat to startLon
+
+                // 2. Zielkandidaten ermitteln (POIs oder ÖPNV-Haltestellen/Orte)
+                val candidates: List<GeoCandidate> = if (parsed.poiCategory != null) {
+                    var centerLat = baseLat
+                    var centerLon = baseLon
+                    var anchorLabel = "deiner Nähe"
+
+                    if (!parsed.poiAnchorPlace.isNullOrBlank()) {
+                        val anchorCands = searchTransitStopsAndPlaces(parsed.poiAnchorPlace, baseLat, baseLon, cityContextName)
+                        val anchor = anchorCands.firstOrNull()
+                        if (anchor == null) {
+                            statusMessage = "Ort \"${parsed.poiAnchorPlace}\" nicht gefunden."
+                            isLoading = false
+                            return@launch
+                        }
+                        centerLat = anchor.lat
+                        centerLon = anchor.lon
+                        anchorLabel = anchor.name
+                    }
+
+                    statusMessage = "Suche ${parsed.poiCategory.label} bei $anchorLabel..."
+                    searchNearbyPoisOverpass(
+                        centerLat = centerLat,
+                        centerLon = centerLon,
+                        category = parsed.poiCategory,
+                        radiusMeters = if (parsed.poiAnchorPlace != null) 1000 else 2500
+                    )
                 } else {
-                    searchTransitStopsAndPlaces(parsed.destination, baseLat, baseLon, cityContextName)
+                    searchTransitStopsAndPlaces(parsed.destination, startLat, startLon, cityContextName)
                 }
 
                 if (candidates.isEmpty()) {
@@ -674,31 +431,22 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     return@launch
                 }
 
-                val chosenDest = candidates.first()
-                if (isLocalPlaceQuery) {
-                    val distM = distanceMetersBetween(baseLat, baseLon, chosenDest.lat, chosenDest.lon).toInt()
-                    placeCandidates = candidates
-                    selectedPlaceIndex = 0
-                    connections = listOf(buildDirectWalkConnection(baseLat, baseLon, chosenDest))
-                    selectedConnectionIndex = 0
-                    statusMessage = "Nächster Ort (${distM} m ohne Bus): ${chosenDest.fullDisplay}"
-                    isLoading = false
-                    return@launch
-                }
-
+                // Immer direkt den besten Treffer (ÖPNV-Haltestelle zuerst!) nehmen, Rest ins Dropdown!
                 placeCandidates = candidates
                 selectedPlaceIndex = 0
                 loadRouteForPlace(
-                    startLat = baseLat,
-                    startLon = baseLon,
+                    startLat = startLat,
+                    startLon = startLon,
                     dest = candidates.first(),
                     preferredMode = parsed.preferredMode,
                     modeDisplay = parsed.modeDisplayName
                 )
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 statusMessage = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
             } finally {
-                isLoading = false
+                if (kotlinx.coroutines.currentCoroutineContext().isActive) isLoading = false
             }
         }
     }
@@ -725,12 +473,12 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         val recognizerIntent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "z. B. Nächster Arzt, Spätkauf oder Bushaltestelle")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "z. B. Rathaus Steglitz oder nächste Bäckerei")
         }
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListening = true
-                statusMessage = "Höre zu... Bitte Ziel oder Wunsch nennen."
+                statusMessage = "Höre zu... Bitte Ziel nennen."
             }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
@@ -827,6 +575,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             .verticalScroll(rememberScrollState())
             .padding(14.dp)
     ) {
+        // KOPFZEILE
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -850,6 +599,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
+        // UPDATE-BUTTON NUR WENN WIRKLICH NEUERES RELEASE ONLINE
         availableUpdate?.let { upd ->
             Spacer(modifier = Modifier.height(6.dp))
             Button(
@@ -875,47 +625,39 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // GROSSER, PRÄSENTER MIKROFON-BUTTON ALS HAUPTAKTION
-        Button(
-            onClick = { triggerVoiceWithPermissionCheck() },
-            enabled = !isLoading,
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(68.dp)
+        // SUCHZEILE + MIKROFON
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
+            OutlinedTextField(
+                value = destinationInput,
+                onValueChange = { destinationInput = it },
+                label = { Text("Haltestelle, Ziel oder Bäckerei...") },
+                placeholder = { Text("z. B. Rathaus Steglitz") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+                onClick = { triggerVoiceWithPermissionCheck() },
+                modifier = Modifier.height(56.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isListening) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
             ) {
-                Text(
-                    text = if (isListening) "🔴" else "🎤",
-                    fontSize = 28.sp
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = if (isListening) "Ich höre zu..." else "Ziel sprechen",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(text = if (isListening) "..." else "MIC", fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
         }
+        Spacer(modifier = Modifier.height(6.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = destinationInput,
-            onValueChange = { destinationInput = it },
-            label = { Text("Oder Ziel, Arzt, Spätkauf, Bäckerei + Enter") },
-            placeholder = { Text("z. B. nächste Bushaltestelle oder Bäckerei") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { searchTransit() }),
+        Button(
+            onClick = { searchTransit() },
+            enabled = !isLoading,
             modifier = Modifier.fillMaxWidth()
-        )
+        ) {
+            Text(if (isLoading) "Suche läuft..." else "Verbindung finden")
+        }
 
         Spacer(modifier = Modifier.height(10.dp))
         Text(
@@ -925,37 +667,31 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        val activeConn = connections.getOrNull(selectedConnectionIndex)
-        val activeDestCandidate = placeCandidates.getOrNull(selectedPlaceIndex)
-
-        // LIVE-NAVIGATIONSPFEIL (KOMPASS-RICHTUNGSPFEIL ZUR HALTESTELLE ODER ZUM ZIEL)
-        if (activeDestCandidate != null) {
-            val firstTransitLeg = activeConn?.legs?.firstOrNull { !it.isWalk && !it.isTransfer }
-            val stopTriple = if (firstTransitLeg?.fromLat != null && firstTransitLeg.fromLon != null) {
-                Triple(firstTransitLeg.fromStop, firstTransitLeg.fromLat, firstTransitLeg.fromLon)
-            } else {
-                null
+        if (isNearbySearch) {
+            placeCandidates.getOrNull(selectedPlaceIndex)?.let { place ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(place.name, fontWeight = FontWeight.Bold)
+                        Text(place.areaLabel)
+                        OutlinedButton(onClick = {
+                            val uri = Uri.parse("geo:${place.lat},${place.lon}?q=${place.lat},${place.lon}(${Uri.encode(place.name)})")
+                            try {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            } catch (_: ActivityNotFoundException) {
+                                statusMessage = "Keine Karten-App installiert. Ziel: ${place.lat}, ${place.lon}"
+                            }
+                        }) { Text("In Karte öffnen / Fußweg planen") }
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
             }
-            val destTriple = Triple(activeDestCandidate.name, activeDestCandidate.lat, activeDestCandidate.lon)
-            val currentPos = liveUserCoords ?: activeStartCoords
-
-            LiveCompassArrowCard(
-                userLat = currentPos?.first,
-                userLon = currentPos?.second,
-                stopTarget = stopTriple,
-                destTarget = destTriple,
-                onOpenMaps = { lat, lon, label -> openStopInMaps(context, lat, lon, label) }
-            )
-            Spacer(modifier = Modifier.height(10.dp))
         }
 
-        // HAUPTERGEBNIS: KOMPAKTE ZUSAMMENFASSUNG + DETAILS ALS DROPDOWN
+        // HAUPTERGEBNIS: BESTE VERBINDUNG DIE JETZT ABFÄHRT
+        val activeConn = connections.getOrNull(selectedConnectionIndex)
         if (activeConn != null) {
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable { toggleSpeakConnection(activeConn) },
+                modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
@@ -980,18 +716,13 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     }
 
                     Spacer(modifier = Modifier.height(4.dp))
-                    val summarySubtitle = if (activeConn.isWalkOnly) {
-                        "Fußweg · ${activeConn.totalWalkMeters} m · ca. ${activeConn.totalDurationMinutes} Min."
-                    } else {
-                        val transferLabel = when (activeConn.transfersCount) {
-                            0 -> "Direktverbindung"
-                            1 -> "1 Umstieg"
-                            else -> "${activeConn.transfersCount} Umstiege"
-                        }
-                        "Ankunft ${activeConn.finalArrivalTime} Uhr · Dauer ${activeConn.totalDurationMinutes} Min. · $transferLabel"
+                    val transferLabel = when (activeConn.transfersCount) {
+                        0 -> if (activeConn.legs.all { it.isWalk }) "Fußweg" else "Direktverbindung"
+                        1 -> "1 Umstieg"
+                        else -> "${activeConn.transfersCount} Umstiege"
                     }
                     Text(
-                        text = summarySubtitle,
+                        text = "Ankunft ${activeConn.finalArrivalTime} Uhr · Dauer ${activeConn.totalDurationMinutes} Min. · $transferLabel",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1009,197 +740,121 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                     }
 
                     // WECKER-NACHFRAGE (sobald die Abfahrt mindestens 12 Minuten in der Zukunft liegt)
-                    if (!activeConn.isWalkOnly) {
-                        val minsUntilDep = ((activeConn.departureMillis - System.currentTimeMillis()) / 60_000L).toInt()
-                        if (minsUntilDep >= 12) {
-                            val defaultLeadMins = when {
-                                minsUntilDep >= 45 -> 20
-                                minsUntilDep >= 25 -> 15
-                                else -> 10
+                    val minsUntilDep = ((activeConn.departureMillis - System.currentTimeMillis()) / 60_000L).toInt()
+                    if (minsUntilDep >= 12 && activeConn.legs.any { !it.isWalk && !it.isTransfer }) {
+                        val defaultLeadMins = when {
+                            minsUntilDep >= 45 -> 20
+                            minsUntilDep >= 25 -> 15
+                            else -> 10
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "⏰ Soll ich dir den Wecker auf $defaultLeadMins Minuten vorher zur Erinnerung stellen?",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(10, 15, 20, 30).filter { it <= minsUntilDep - 2 }.take(3).forEach { mins ->
+                                    OutlinedButton(
+                                        onClick = {
+                                            statusMessage = setDepartureAlarm(
+                                                context = context,
+                                                departureMillis = activeConn.departureMillis,
+                                                minutesBefore = mins,
+                                                label = "Abfahrt ${activeConn.firstLine} (${activeConn.firstDepartureTime} Uhr)"
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(text = "$mins Min. vorher", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    activeConn.legs.forEachIndexed { idx, leg ->
+                        if (idx > 0) {
                             Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        if (leg.isTransfer) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f),
+                                        shape = RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val distNote = if (leg.distanceMeters > 0) ", ${leg.distanceMeters} m Fußweg" else ""
+                                Text(
+                                    text = "↻ Umstieg an ${leg.fromStop} (${leg.durationMinutes} Min. Übergang$distNote)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                        } else if (leg.isWalk) {
+                            Text(
+                                text = "↳ Fußweg (${leg.durationMinutes} Min., ${leg.distanceMeters} m) → ${leg.toStop}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        } else {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .background(
-                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                                         shape = RoundedCornerShape(8.dp)
                                     )
                                     .padding(10.dp)
                             ) {
-                                Text(
-                                    text = "⏰ Soll ich dir den Wecker auf $defaultLeadMins Minuten vorher zur Erinnerung stellen?",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    listOf(3, 5, 10).forEach { mins ->
-                                        OutlinedButton(
-                                            onClick = {
-                                                statusMessage = setDepartureAlarm(
-                                                    context = context,
-                                                    departureMillis = activeConn.departureMillis,
-                                                    minutesBefore = mins,
-                                                    label = "Abfahrt ${activeConn.firstLine} (${activeConn.firstDepartureTime} Uhr)"
-                                                )
-                                            },
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                            modifier = Modifier.weight(1f)
-                                        ) {
-                                            Text(text = "$mins Min. vorher", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // DETAILS ALS DROPDOWN (EINZELNE ABSCHNITTE, UMSTIEGE, KARTEN-LINKS)
-                    OutlinedButton(
-                        onClick = { detailsDropdownExpanded = !detailsDropdownExpanded },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Verbindungs-Details (${activeConn.legs.size} Abschnitte)",
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(text = if (detailsDropdownExpanded) "▲" else "▼")
-                        }
-                    }
-
-                    if (detailsDropdownExpanded) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        activeConn.legs.forEachIndexed { idx, leg ->
-                            if (idx > 0) {
-                                Spacer(modifier = Modifier.height(8.dp))
-                            }
-                            val isLegExpanded = expandedLegIndex == idx
-
-                            if (leg.isTransfer) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.85f))
-                                        .clickable { expandedLegIndex = if (isLegExpanded) null else idx }
-                                        .padding(horizontal = 10.dp, vertical = 7.dp)
-                                ) {
-                                    val distNote = if (leg.distanceMeters > 0) ", ${leg.distanceMeters} m Fußweg" else ""
                                     Text(
-                                        text = "↻ Umstieg an ${leg.fromStop} (${leg.durationMinutes} Min. Übergang$distNote)",
-                                        style = MaterialTheme.typography.bodySmall,
+                                        text = "${leg.lineName} → ${leg.direction}",
                                         fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        modifier = Modifier.weight(1f)
                                     )
-                                    if (isLegExpanded) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        OutlinedButton(
-                                            onClick = { openStopInMaps(context, leg.fromLat, leg.fromLon, leg.fromStop) }
-                                        ) {
-                                            Text("🗺️ Haltestelle auf Karte", fontSize = 12.sp)
-                                        }
-                                    }
-                                }
-                            } else if (leg.isWalk) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable { openStopInMaps(context, leg.toLat, leg.toLon, leg.toStop) }
-                                        .padding(vertical = 4.dp, horizontal = 4.dp)
-                                ) {
+                                    val legDelay = if (leg.delayMinutes > 0) " (+${leg.delayMinutes}')" else ""
                                     Text(
-                                        text = "↳ Fußweg (${leg.durationMinutes} Min., ${leg.distanceMeters} m) → ${leg.toStop}  🗺️",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.secondary
+                                        text = "${leg.startTime}$legDelay",
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (leg.delayMinutes > 2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                     )
                                 }
-                            } else {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(
-                                            color = if (isLegExpanded) {
-                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                                            } else {
-                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                                            }
-                                        )
-                                        .clickable { expandedLegIndex = if (isLegExpanded) null else idx }
-                                        .padding(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = "${leg.lineName} → ${leg.direction}",
-                                            fontWeight = FontWeight.Bold,
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        val legDelay = if (leg.delayMinutes > 0) " (+${leg.delayMinutes}')" else ""
-                                        Text(
-                                            text = "${leg.startTime}$legDelay",
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (leg.delayMinutes > 2) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "Ab ${leg.startTime}: ${leg.fromStop}",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    Text(
-                                        text = "An ${leg.endTime}: ${leg.toStop}",
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-
-                                    if (isLegExpanded) {
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            OutlinedButton(
-                                                onClick = { openStopInMaps(context, leg.fromLat, leg.fromLon, leg.fromStop) },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("🗺️ Einstieg", fontSize = 12.sp)
-                                            }
-                                            OutlinedButton(
-                                                onClick = { openStopInMaps(context, leg.toLat, leg.toLon, leg.toStop) },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("🗺️ Ausstieg", fontSize = 12.sp)
-                                            }
-                                            OutlinedButton(
-                                                onClick = {
-                                                    speakText(
-                                                        "Um ${formatTimeForSpeech(leg.startTime)} ab ${leg.fromStop} mit ${leg.lineName} Richtung ${leg.direction}. Ankunft um ${formatTimeForSpeech(leg.endTime)} an ${leg.toStop}."
-                                                    )
-                                                },
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                Text("🔊 Ansage", fontSize = 12.sp)
-                                            }
-                                        }
-                                    }
-                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "Ab ${leg.startTime}: ${leg.fromStop}",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = "An ${leg.endTime}: ${leg.toStop}",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
                             }
                         }
                     }
@@ -1207,7 +862,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
-        // DROPDOWN: ALTERNATIVEN
+        // DROPDOWN 1: ALTERNATIVEN (SPÄTERE / ANDERE VERBINDUNGEN)
         if (connections.size > 1) {
             Spacer(modifier = Modifier.height(10.dp))
             Box(modifier = Modifier.fillMaxWidth()) {
@@ -1238,7 +893,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                         val isSelected = index == selectedConnectionIndex
                         val delayStr = if (conn.firstDelayMinutes > 0) " (+${conn.firstDelayMinutes}')" else ""
                         val bestTag = if (index == 0) " · Beste" else ""
-                        val transferTag = if (conn.isWalkOnly) "Fußweg" else if (conn.transfersCount == 0) "Direkt" else "${conn.transfersCount}× Umstieg"
+                        val transferTag = if (conn.transfersCount == 0) "Direkt" else "${conn.transfersCount}× Umstieg"
                         DropdownMenuItem(
                             text = {
                                 Column {
@@ -1259,8 +914,6 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
                                     isSpeaking = false
                                 }
                                 selectedConnectionIndex = index
-                                detailsDropdownExpanded = false
-                                expandedLegIndex = null
                                 alternativesDropdownExpanded = false
                             }
                         )
@@ -1269,7 +922,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
             }
         }
 
-        // DROPDOWN: ANDERE ORTE / HALTESTELLEN
+        // DROPDOWN 2: ANDERE ORTE / HALTESTELLEN (ALLES ANDERE SAUBER EINGEKLAPPT)
         if (placeCandidates.size > 1) {
             Spacer(modifier = Modifier.height(8.dp))
             Box(modifier = Modifier.fillMaxWidth()) {
@@ -1335,6 +988,7 @@ fun TransitFinderScreen(externalVoiceTrigger: Int) {
     }
 }
 
+@Suppress("DEPRECATION")
 suspend fun resolveCityNameFromCoords(context: Context, lat: Double, lon: Double): String? =
     withContext(Dispatchers.IO) {
         try {
@@ -1365,122 +1019,79 @@ private fun distanceMetersBetween(lat1: Double, lon1: Double, lat2: Double, lon2
     return results[0]
 }
 
-/**
- * Fehlertolerante POI- und Haltestellensuche:
- * 1. Fragt der Reihe nach mehrere Overpass-Server ab (verhindert Timeouts bei überlastetem Hauptserver)
- * 2. Fallback über Transitous Reverse-Geocode / Geocode, falls Overpass gar nicht antwortet.
- */
-suspend fun searchNearbyPoisRobust(
+suspend fun searchNearbyPoisOverpass(
     centerLat: Double,
     centerLon: Double,
     category: PoiCategory,
-    cityContext: String,
-    radiusMeters: Int = 2000
+    radiusMeters: Int = 1500
 ): List<GeoCandidate> = withContext(Dispatchers.IO) {
-    val found = mutableListOf<GeoCandidate>()
-
-    // 1. Wenn speziell nach der nächsten Haltestelle gefragt wurde: direkt Transitous Reverse-Geocode nutzen (superschnell & exakt)
-    if (category.isTransitStopSearch) {
-        try {
-            val revUrl = "https://api.transitous.org/api/v1/reverse-geocode?place=$centerLat,$centerLon"
-            val arr = JSONArray(httpGet(revUrl))
-            for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                val type = obj.optString("type", "").uppercase(Locale.US)
-                val name = obj.optString("name", "").trim()
-                val lat = obj.optDouble("lat", Double.NaN)
-                val lon = obj.optDouble("lon", Double.NaN)
-                if (lat.isNaN() || lon.isNaN() || name.isBlank()) continue
-                if (type == "STOP" || name.contains("Bhf", true) || name.contains("Bahnhof", true) || name.startsWith("S ") || name.startsWith("U ")) {
-                    val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
-                    found.add(
-                        GeoCandidate(
-                            name = name,
-                            areaLabel = "ca. $dist m entfernt",
-                            lat = lat,
-                            lon = lon,
-                            isStop = true,
-                            isStreet = false
-                        )
-                    )
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
-    // 2. Overpass-Abfrage über mehrere Spiegelserver mit Fallback
-    if (found.isEmpty()) {
-        val unionLines = category.overpassQueries.joinToString("\n") { filter ->
-            "  node$filter(around:$radiusMeters,$centerLat,$centerLon);\n  way$filter(around:$radiusMeters,$centerLat,$centerLon);"
-        }
+    try {
         val query = """
-            [out:json][timeout:12];
+            [out:json][timeout:10];
             (
-            $unionLines
+              ${(listOf(category.overpassFilter) + category.extraFilters).joinToString("\n") {
+                  "nwr$it(around:$radiusMeters,$centerLat,$centerLon);"
+              }}
             );
-            out center 20;
+            out center;
         """.trimIndent()
-        val encodedQuery = URLEncoder.encode(query, "UTF-8")
-        val endpoints = listOf(
-            "https://overpass-api.de/api/interpreter?data=$encodedQuery",
-            "https://overpass.kumi.systems/api/interpreter?data=$encodedQuery",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter?data=$encodedQuery"
-        )
-
-        for (ep in endpoints) {
+        var response: JSONObject? = null
+        var lastError: Exception? = null
+        for (endpoint in listOf("https://overpass.private.coffee/api/interpreter", "https://overpass-api.de/api/interpreter")) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
             try {
-                val root = JSONObject(httpGet(ep))
-                val elements = root.optJSONArray("elements") ?: continue
-                for (i in 0 until elements.length()) {
-                    val el = elements.getJSONObject(i)
-                    val tags = el.optJSONObject("tags") ?: continue
-                    val lat = if (el.has("lat")) el.getDouble("lat") else el.optJSONObject("center")?.optDouble("lat", Double.NaN) ?: Double.NaN
-                    val lon = if (el.has("lon")) el.getDouble("lon") else el.optJSONObject("center")?.optDouble("lon", Double.NaN) ?: Double.NaN
-                    if (lat.isNaN() || lon.isNaN()) continue
-
-                    val rawName = tags.optString("name", "").trim()
-                    val displayName = if (rawName.isNotBlank()) rawName else category.label
-                    val street = tags.optString("addr:street", "").trim()
-                    val houseNo = tags.optString("addr:housenumber", "").trim()
-                    val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
-                    val addrPart = listOf(street, houseNo).filter { it.isNotBlank() }.joinToString(" ")
-                    val label = if (addrPart.isNotBlank()) "$addrPart · ca. $dist m" else "ca. $dist m entfernt"
-
-                    found.add(
-                        GeoCandidate(
-                            name = displayName,
-                            areaLabel = label,
-                            lat = lat,
-                            lon = lon,
-                            isStop = category.isTransitStopSearch,
-                            isStreet = false
-                        )
-                    )
-                }
-                if (found.isNotEmpty()) break
-            } catch (_: Exception) {
-                // Nächsten Overpass-Server probieren
+                val result = JSONObject(httpGet("$endpoint?data=${URLEncoder.encode(query, "UTF-8")}"))
+                check(!result.has("remark")) { "Umgebungssuche hat das Zeitlimit erreicht." }
+                response = result
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
             }
         }
-    }
+        val root = response ?: throw IllegalStateException("Umgebungssuche nicht erreichbar.", lastError)
+        val elements = root.optJSONArray("elements") ?: return@withContext emptyList()
 
-    // 3. Fallback über Transitous Geocode falls Overpass komplett blockiert ist
-    if (found.isEmpty()) {
-        val fallbackQuery = if (cityContext.isNotBlank()) "${category.fallbackKeyword} $cityContext" else category.fallbackKeyword
-        found.addAll(searchTransitStopsAndPlaces(fallbackQuery, centerLat, centerLon, cityContext))
-    }
+        val found = mutableListOf<GeoCandidate>()
+        for (i in 0 until elements.length()) {
+            val el = elements.getJSONObject(i)
+            val tags = el.optJSONObject("tags") ?: continue
+            val lat = if (el.has("lat")) el.getDouble("lat") else el.optJSONObject("center")?.optDouble("lat", Double.NaN) ?: Double.NaN
+            val lon = if (el.has("lon")) el.getDouble("lon") else el.optJSONObject("center")?.optDouble("lon", Double.NaN) ?: Double.NaN
+            if (lat.isNaN() || lon.isNaN()) continue
 
-    val sorted = found.sortedBy { distanceMetersBetween(centerLat, centerLon, it.lat, it.lon) }
-    val distinct = mutableListOf<GeoCandidate>()
-    for (cand in sorted) {
-        val dup = distinct.any { distanceMetersBetween(it.lat, it.lon, cand.lat, cand.lon) < 40f }
-        if (!dup) distinct.add(cand)
-        if (distinct.size >= 6) break
+            val rawName = tags.optString("name", "").trim()
+            val displayName = if (rawName.isNotBlank()) rawName else category.label
+            val street = tags.optString("addr:street", "").trim()
+            val houseNo = tags.optString("addr:housenumber", "").trim()
+            val dist = distanceMetersBetween(centerLat, centerLon, lat, lon).toInt()
+            val addrPart = listOf(street, houseNo).filter { it.isNotBlank() }.joinToString(" ")
+            val label = if (addrPart.isNotBlank()) "$addrPart · ca. $dist m" else "ca. $dist m entfernt"
+
+            found.add(
+                GeoCandidate(
+                    name = displayName,
+                    areaLabel = label,
+                    lat = lat,
+                    lon = lon,
+                    isStop = category.isStop,
+                    isStreet = false
+                )
+            )
+        }
+        found.sortedBy { distanceMetersBetween(centerLat, centerLon, it.lat, it.lon) }.take(6)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw IllegalStateException("Umgebungssuche nicht erreichbar. Bitte erneut versuchen.", e)
     }
-    distinct
 }
 
+/**
+ * Priorisiert passende Ortsnamen; erst danach Haltestellen und kurze Entfernung.
+ * Benachbarte Haltestellen mit anderen Namen bleiben als Alternativen erhalten.
+ */
 suspend fun searchTransitStopsAndPlaces(
     rawQuery: String,
     biasLat: Double,
@@ -1489,14 +1100,15 @@ suspend fun searchTransitStopsAndPlaces(
 ): List<GeoCandidate> = withContext(Dispatchers.IO) {
     try {
         val cleanQuery = rawQuery.trim()
-        val queryWords = cleanQuery.split(Regex("\\s+")).filter { it.length >= 3 }
-
+            .replace(Regex("\\bs[- ]?bahnhof\\s+", RegexOption.IGNORE_CASE), "S ")
+            .replace(Regex("\\bu[- ]?bahnhof\\s+", RegexOption.IGNORE_CASE), "U ")
         val urls = mutableListOf(
             "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(cleanQuery, "UTF-8")}&place=$biasLat,$biasLon"
         )
-        if (queryWords.size == 1 && cityContext.isNotBlank() && !cleanQuery.contains(cityContext, ignoreCase = true)) {
+        if (cityContext.isNotBlank() && !cleanQuery.contains(cityContext, ignoreCase = true)) {
             val withCity = "$cleanQuery, $cityContext"
             urls.add(
+                0,
                 "https://api.transitous.org/api/v1/geocode?text=${URLEncoder.encode(withCity, "UTF-8")}&place=$biasLat,$biasLon"
             )
         }
@@ -1513,28 +1125,23 @@ suspend fun searchTransitStopsAndPlaces(
                 if (lat.isNaN() || lon.isNaN()) continue
 
                 val distFromUser = distanceMetersBetween(biasLat, biasLon, lat, lon)
-                if (distFromUser > 120_000f) continue
+                if (distFromUser > 45_000f && placeNameMatchScore(cleanQuery, name) < 200) continue
 
                 val areaParts = mutableListOf<String>()
                 val areas = obj.optJSONArray("areas")
                 if (areas != null) {
                     for (a in 0 until areas.length()) {
                         val areaObj = areas.getJSONObject(a)
-                        val adminLevel = areaObj.optInt("adminLevel", 0)
                         val areaName = areaObj.optString("name", "").trim()
-                        if (areaName.isBlank() || areaName == "Deutschland") continue
-                        if (areaName.startsWith("Regierungsbezirk", ignoreCase = true)) continue
-                        if (adminLevel in 1..5 && adminLevel != 0) continue
-                        if (!areaParts.contains(areaName)) {
+                        if (areaName.isNotBlank() && !areaParts.contains(areaName) && areaName != "Deutschland") {
                             areaParts.add(areaName)
                         }
                     }
                 }
                 val zip = obj.optString("zip", "").trim()
-                val compactCity = areaParts.takeLast(2).joinToString(", ")
                 val areaText = buildString {
                     if (zip.isNotBlank()) append("$zip ")
-                    append(compactCity)
+                    append(areaParts.take(3).joinToString(", "))
                 }.trim()
 
                 val isStop = type == "STOP"
@@ -1552,24 +1159,19 @@ suspend fun searchTransitStopsAndPlaces(
             }
         }
 
-        fun matchScore(c: GeoCandidate): Int {
-            val nameLower = c.name.lowercase(Locale.GERMANY)
-            val fullLower = "${c.name} ${c.areaLabel}".lowercase(Locale.GERMANY)
-            val nameWordHits = queryWords.count { w -> nameLower.contains(w.lowercase(Locale.GERMANY)) }
-            val areaWordHits = queryWords.count { w -> fullLower.contains(w.lowercase(Locale.GERMANY)) }
-            val exactBonus = if (nameLower.contains(cleanQuery.lowercase(Locale.GERMANY))) 25 else 0
-            return exactBonus + (nameWordHits * 15) + (areaWordHits * 8) + (if (c.isStop) 5 else if (c.isStreet) 2 else 0)
-        }
-
+        // Exact destination name takes precedence over a closer, unrelated station.
         val sorted = rawCandidates.sortedWith(
-            compareByDescending<GeoCandidate> { matchScore(it) }
+            compareByDescending<GeoCandidate> { placeNameMatchScore(cleanQuery, it.name) }
+                .thenByDescending { it.isStop }
+                .thenByDescending { it.isStreet }
                 .thenBy { distanceMetersBetween(biasLat, biasLon, it.lat, it.lon) }
         )
 
         val distinct = mutableListOf<GeoCandidate>()
         for (cand in sorted) {
             val isDuplicate = distinct.any { existing ->
-                distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 550f
+                normalizedPlaceName(existing.name) == normalizedPlaceName(cand.name) &&
+                    distanceMetersBetween(existing.lat, existing.lon, cand.lat, cand.lon) < 100f
             }
             if (!isDuplicate) {
                 distinct.add(cand)
@@ -1580,52 +1182,6 @@ suspend fun searchTransitStopsAndPlaces(
     } catch (_: Exception) {
         emptyList()
     }
-}
-
-private fun buildDirectWalkConnection(
-    startLat: Double,
-    startLon: Double,
-    dest: GeoCandidate
-): TransitConnection {
-    val distMeters = distanceMetersBetween(startLat, startLon, dest.lat, dest.lon).toInt()
-    val walkMins = maxOf(1, kotlin.math.ceil(distMeters / 75.0).toInt())
-    val nowMillis = System.currentTimeMillis()
-    val nowFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(nowMillis))
-    val arrMillis = nowMillis + walkMins * 60_000L
-    val arrFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(arrMillis))
-    return TransitConnection(
-        summaryLines = "🚶 Nächster Ort zu Fuß ($distMeters m)",
-        firstLine = "Fußweg",
-        firstDirection = dest.fullDisplay,
-        firstDepartureTime = nowFmt,
-        finalArrivalTime = arrFmt,
-        departureMillis = nowMillis,
-        arrivalMillis = arrMillis,
-        firstDelayMinutes = 0,
-        totalDurationMinutes = walkMins,
-        transfersCount = 0,
-        totalWalkMeters = distMeters,
-        isWalkOnly = true,
-        legs = listOf(
-            RouteLegInfo(
-                isWalk = true,
-                isTransfer = false,
-                lineName = "Fußweg",
-                direction = dest.fullDisplay,
-                fromStop = "Aktueller Standort",
-                toStop = dest.fullDisplay,
-                fromLat = startLat,
-                fromLon = startLon,
-                toLat = dest.lat,
-                toLon = dest.lon,
-                startTime = nowFmt,
-                endTime = arrFmt,
-                delayMinutes = 0,
-                durationMinutes = walkMins,
-                distanceMeters = distMeters
-            )
-        )
-    )
 }
 
 suspend fun fetchConnectionsForCoords(
@@ -1646,6 +1202,8 @@ suspend fun fetchConnectionsForCoords(
         else -> ""
     }
 
+    // A faster walking trip can otherwise suppress all requested transit trips.
+    val directModesParam = if (preferredMode == null) "" else "&directModes="
     val referenceMillis = customDepartureMillis ?: System.currentTimeMillis()
     val isoFmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
         timeZone = TimeZone.getTimeZone("UTC")
@@ -1659,10 +1217,14 @@ suspend fun fetchConnectionsForCoords(
             "&arriveBy=false" +
             "&maxPreTransitTime=1800" +
             "&maxPostTransitTime=1800" +
-            "&numItineraries=15$modesParam"
+            "&numItineraries=10$modesParam$directModesParam"
 
     val root = JSONObject(httpGet(planUrl))
-    val itineraries = root.optJSONArray("itineraries") ?: return@withContext emptyList()
+    val itineraries = JSONArray()
+    for (key in listOf("itineraries", "direct")) {
+        val source = root.optJSONArray(key) ?: continue
+        for (index in 0 until source.length()) itineraries.put(source.getJSONObject(index))
+    }
     val resultList = mutableListOf<TransitConnection>()
     val nowMillis = referenceMillis
     val minAllowedDeparture = referenceMillis - 60 * 1000L
@@ -1681,7 +1243,6 @@ suspend fun fetchConnectionsForCoords(
         var firstTransitDir = ""
         var finalArrTime = ""
         var finalArrMillis: Long? = null
-        var walkMetersSum = 0
 
         for (j in 0 until legsJson.length()) {
             val leg = legsJson.getJSONObject(j)
@@ -1689,14 +1250,8 @@ suspend fun fetchConnectionsForCoords(
             val isWalk = mode.equals("WALK", ignoreCase = true)
             val durSec = leg.optInt("duration", 0)
             val dist = leg.optDouble("distance", 0.0).toInt()
-            val fromObj = leg.optJSONObject("from")
-            val toObj = leg.optJSONObject("to")
-            val originName = fromObj?.optString("name") ?: "Start"
-            val arrivalStopName = if (j == legsJson.length() - 1) destName else (toObj?.optString("name") ?: destName)
-            val fLat = fromObj?.optDouble("lat", Double.NaN)?.takeIf { !it.isNaN() }
-            val fLon = fromObj?.optDouble("lon", Double.NaN)?.takeIf { !it.isNaN() }
-            val tLat = toObj?.optDouble("lat", Double.NaN)?.takeIf { !it.isNaN() } ?: destLat
-            val tLon = toObj?.optDouble("lon", Double.NaN)?.takeIf { !it.isNaN() } ?: destLon
+            val originName = leg.optJSONObject("from")?.optString("name") ?: "Start"
+            val arrivalStopName = leg.optJSONObject("to")?.optString("name") ?: destName
 
             val startTimeStr = leg.optString("startTime", "")
             val endTimeStr = leg.optString("endTime", "")
@@ -1708,7 +1263,6 @@ suspend fun fetchConnectionsForCoords(
             finalArrMillis = parseIsoMillis(endTimeStr)
 
             if (isWalk) {
-                walkMetersSum += dist
                 rawParsedLegs.add(
                     RouteLegInfo(
                         isWalk = true,
@@ -1717,10 +1271,6 @@ suspend fun fetchConnectionsForCoords(
                         direction = "",
                         fromStop = originName,
                         toStop = arrivalStopName,
-                        fromLat = fLat,
-                        fromLon = fLon,
-                        toLat = tLat,
-                        toLon = tLon,
                         startTime = formattedStart,
                         endTime = formattedEnd,
                         delayMinutes = 0,
@@ -1752,10 +1302,6 @@ suspend fun fetchConnectionsForCoords(
                         direction = headsign,
                         fromStop = originName,
                         toStop = arrivalStopName,
-                        fromLat = fLat,
-                        fromLon = fLon,
-                        toLat = tLat,
-                        toLon = tLon,
                         startTime = formattedStart,
                         endTime = formattedEnd,
                         delayMinutes = delayMins,
@@ -1766,29 +1312,12 @@ suspend fun fetchConnectionsForCoords(
             }
         }
 
-        // Reine Fußweg-Verbindungen ebenfalls zulassen (wichtig für nahe Ziele wie Bäckerei/Arzt/nächste Haltestelle)
+        if (rawParsedLegs.isEmpty()) continue
         if (transitLineNames.isEmpty()) {
-            if (rawParsedLegs.isNotEmpty()) {
-                val firstWalk = rawParsedLegs.first()
-                resultList.add(
-                    TransitConnection(
-                        summaryLines = "🚶 Fußweg zum Ziel",
-                        firstLine = "Fußweg",
-                        firstDirection = destName,
-                        firstDepartureTime = firstWalk.startTime,
-                        finalArrivalTime = finalArrTime,
-                        departureMillis = nowMillis,
-                        arrivalMillis = finalArrMillis ?: (nowMillis + totalDurSec * 1000L),
-                        firstDelayMinutes = 0,
-                        totalDurationMinutes = maxOf(1, totalDurSec / 60),
-                        transfersCount = 0,
-                        totalWalkMeters = walkMetersSum,
-                        isWalkOnly = true,
-                        legs = rawParsedLegs
-                    )
-                )
-            }
-            continue
+            val startMillis = parseIsoMillis(legsJson.getJSONObject(0).optString("startTime")) ?: referenceMillis
+            firstTransitDepartureMillis = startMillis
+            firstTransitDepartureTime = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(startMillis))
+            firstTransitLine = "Fußweg"
         }
 
         if (firstTransitDepartureMillis != null && firstTransitDepartureMillis < minAllowedDeparture) {
@@ -1813,10 +1342,6 @@ suspend fun fetchConnectionsForCoords(
                             direction = "",
                             fromStop = current.fromStop,
                             toStop = current.fromStop,
-                            fromLat = current.fromLat,
-                            fromLon = current.fromLon,
-                            toLat = current.fromLat,
-                            toLon = current.fromLon,
                             startTime = prevTransit.endTime,
                             endTime = current.startTime,
                             delayMinutes = 0,
@@ -1854,7 +1379,7 @@ suspend fun fetchConnectionsForCoords(
 
         resultList.add(
             TransitConnection(
-                summaryLines = transitLineNames.joinToString(" → "),
+                summaryLines = if (transitLineNames.isEmpty()) "Zu Fuß" else transitLineNames.joinToString(" → "),
                 firstLine = firstTransitLine,
                 firstDirection = firstTransitDir,
                 firstDepartureTime = firstTransitDepartureTime,
@@ -1864,66 +1389,12 @@ suspend fun fetchConnectionsForCoords(
                 firstDelayMinutes = firstTransitDelay,
                 totalDurationMinutes = maxOf(1, totalDurSec / 60),
                 transfersCount = maxOf(0, transitLineNames.size - 1),
-                totalWalkMeters = walkMetersSum,
-                isWalkOnly = false,
                 legs = finalLegs
             )
         )
     }
 
-    // Falls MOTIS gar keine Route zurückgibt (z. B. Ziel liegt 150m entfernt), direkten Fußweg erzeugen
-    if (resultList.isEmpty()) {
-        val straightMeters = distanceMetersBetween(startLat, startLon, destLat, destLon).toInt()
-        val estWalkMins = maxOf(1, straightMeters / 75)
-        val nowFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(referenceMillis))
-        val arrMillis = referenceMillis + estWalkMins * 60_000L
-        val arrFmt = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(arrMillis))
-        resultList.add(
-            TransitConnection(
-                summaryLines = "🚶 Fußweg zum Ziel",
-                firstLine = "Fußweg",
-                firstDirection = destName,
-                firstDepartureTime = nowFmt,
-                finalArrivalTime = arrFmt,
-                departureMillis = referenceMillis,
-                arrivalMillis = arrMillis,
-                firstDelayMinutes = 0,
-                totalDurationMinutes = estWalkMins,
-                transfersCount = 0,
-                totalWalkMeters = straightMeters,
-                isWalkOnly = true,
-                legs = listOf(
-                    RouteLegInfo(
-                        isWalk = true,
-                        isTransfer = false,
-                        lineName = "Fußweg",
-                        direction = destName,
-                        fromStop = "Aktueller Standort",
-                        toStop = destName,
-                        fromLat = startLat,
-                        fromLon = startLon,
-                        toLat = destLat,
-                        toLon = destLon,
-                        startTime = nowFmt,
-                        endTime = arrFmt,
-                        delayMinutes = 0,
-                        durationMinutes = estWalkMins,
-                        distanceMeters = straightMeters
-                    )
-                )
-            )
-        )
-    }
-
-    resultList.sortedWith { a, b ->
-        val arrDiffMins = (a.arrivalMillis - b.arrivalMillis) / 60000L
-        if (kotlin.math.abs(arrDiffMins) >= 5) {
-            a.arrivalMillis.compareTo(b.arrivalMillis)
-        } else {
-            val transferCmp = a.transfersCount.compareTo(b.transfersCount)
-            if (transferCmp != 0) transferCmp else a.totalWalkMeters.compareTo(b.totalWalkMeters)
-        }
-    }
+    resultList.sortedWith(compareBy<TransitConnection> { it.arrivalMillis }.thenBy { it.departureMillis })
 }
 
 private fun computeMinutesDiff(hhMmStart: String, hhMmEnd: String): Int {
@@ -1939,13 +1410,9 @@ private fun computeMinutesDiff(hhMmStart: String, hhMmEnd: String): Int {
     }
 }
 
-private fun formatIsoTime(isoStr: String): String {
-    return if (isoStr.length >= 16 && isoStr.contains("T")) {
-        isoStr.substringAfter("T").take(5)
-    } else {
-        SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
-    }
-}
+private fun formatIsoTime(isoStr: String): String = parseIsoMillis(isoStr)?.let {
+    SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(it))
+} ?: "—"
 
 private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int {
     return try {
@@ -1960,13 +1427,15 @@ private fun calculateDelayMinutes(scheduledIso: String, actualIso: String): Int 
 private fun httpGet(urlString: String): String {
     val conn = URL(urlString).openConnection() as HttpURLConnection
     conn.requestMethod = "GET"
-    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/5.0 (https://github.com/ClaudeHoeni/LippstadtBus)")
-    conn.connectTimeout = 10000
-    conn.readTimeout = 10000
-    if (conn.responseCode !in 200..299) {
-        throw IllegalStateException("HTTP ${conn.responseCode}")
+    conn.setRequestProperty("User-Agent", "AbfahrtenNextAndHere/4.1 (https://github.com/ClaudeHoeni/LippstadtBus)")
+    conn.connectTimeout = 12000
+    conn.readTimeout = 12000
+    return try {
+        if (conn.responseCode !in 200..299) throw IllegalStateException("HTTP ${conn.responseCode}")
+        conn.inputStream.bufferedReader().use { it.readText() }
+    } finally {
+        conn.disconnect()
     }
-    return conn.inputStream.bufferedReader().use { it.readText() }
 }
 
 suspend fun checkForGitHubUpdate(context: Context): AppUpdateInfo? = withContext(Dispatchers.IO) {
@@ -2019,4 +1488,35 @@ suspend fun downloadAndInstallApk(context: Context, update: AppUpdateInfo) {
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
     }
     context.startActivity(installIntent)
+}
+fun setDepartureAlarm(context: Context, departureMillis: Long, minutesBefore: Int, label: String): String {
+    val now = System.currentTimeMillis()
+    val alarmMillis = departureMillis - minutesBefore * 60_000L
+    if (minutesBefore < 0 || alarmMillis <= now) return "Die Erinnerungszeit ist bereits vorbei."
+    val alarm = Calendar.getInstance().apply { timeInMillis = alarmMillis }
+    val nextOccurrence = Calendar.getInstance().apply {
+        timeInMillis = now
+        set(Calendar.HOUR_OF_DAY, alarm.get(Calendar.HOUR_OF_DAY))
+        set(Calendar.MINUTE, alarm.get(Calendar.MINUTE))
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+        if (timeInMillis <= now) add(Calendar.DAY_OF_YEAR, 1)
+    }
+    if (kotlin.math.abs(nextOccurrence.timeInMillis - alarmMillis) >= 60_000L) {
+        return "Diese Erinnerung liegt an einem späteren Datum. Bitte in der Uhr-App mit Datum anlegen."
+    }
+    val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+        putExtra(AlarmClock.EXTRA_HOUR, alarm.get(Calendar.HOUR_OF_DAY))
+        putExtra(AlarmClock.EXTRA_MINUTES, alarm.get(Calendar.MINUTE))
+        putExtra(AlarmClock.EXTRA_MESSAGE, label)
+        putExtra(AlarmClock.EXTRA_SKIP_UI, false)
+    }
+    return try {
+        context.startActivity(intent)
+        "Wecker-App geöffnet: Bitte Erinnerung um ${SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(alarmMillis))} Uhr bestätigen."
+    } catch (_: ActivityNotFoundException) {
+        "Keine kompatible Wecker-App installiert."
+    } catch (_: SecurityException) {
+        "Die Wecker-App erlaubt das Anlegen dieser Erinnerung nicht."
+    }
 }
