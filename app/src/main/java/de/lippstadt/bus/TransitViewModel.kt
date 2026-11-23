@@ -84,6 +84,10 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     var isUpdating by mutableStateOf(false)
         private set
 
+    /** Wird true, sobald der Installer gestartet ist – die Activity schließt sich dann. */
+    var closeAfterInstall by mutableStateOf(false)
+        private set
+
     val activeConnection: TransitConnection? get() = connections.getOrNull(selectedConnection)
     val activePlace: GeoCandidate? get() = places.getOrNull(selectedPlace)
 
@@ -421,6 +425,8 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val apk = TransitApi.downloadApk(upd, File(ctx.cacheDir, "update.apk"))
                 SystemActions.installApk(ctx, apk)
+                status = "Update wird installiert …"
+                closeAfterInstall = true
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
