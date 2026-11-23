@@ -36,6 +36,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 
@@ -74,8 +75,6 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     var places by mutableStateOf<List<GeoCandidate>>(emptyList())
         private set
     var selectedPlace by mutableIntStateOf(0)
-        private set
-    var startStop by mutableStateOf<GeoCandidate?>(null)
         private set
     var timeLabel by mutableStateOf<String?>(null)
         private set
@@ -204,29 +203,52 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     fun refreshLocation() {
-        viewModelScope.launch { locate() }
+        viewModelScope.launch { locate(maxAgeMs = 0) }
     }
 
+    private var locatedAtMillis = 0L
+
+    /**
+     * Liefert den Standort schnell: ein frischer Standort (< [maxAgeMs]) wird wiederverwendet,
+     * ein neuer GPS-Fix hat höchstens 6 s Zeit, danach gilt der letzte bekannte Standort.
+     * Der Stadtname wird im Hintergrund ermittelt und blockiert die Suche nicht mehr.
+     */
     @SuppressLint("MissingPermission")
-    private suspend fun locate(): UserLocation? {
+    private suspend fun locate(maxAgeMs: Long = 90_000): UserLocation? {
         if (!hasLocationPermission()) return null
+        val cached = userLocation
+        if (cached != null && System.currentTimeMillis() - locatedAtMillis <= maxAgeMs) return cached
+
         isLocating = true
         return try {
-            val loc = runCatching {
-                fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-            }.getOrNull() ?: runCatching { fusedLocation.lastLocation.await() }.getOrNull()
+            val loc = withTimeoutOrNull(6_000) {
+                runCatching { fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+            } ?: runCatching { fusedLocation.lastLocation.await() }.getOrNull()
             if (loc == null) {
-                null
+                cached
             } else {
-                val city = resolveCity(loc.latitude, loc.longitude).orEmpty()
-                if (city.isNotBlank()) gpsCity = city
-                UserLocation(loc.latitude, loc.longitude, city).also { userLocation = it }
+                val prevCity = cached?.takeIf {
+                    distanceMeters(it.lat, it.lon, loc.latitude, loc.longitude) < 3_000
+                }?.city.orEmpty()
+                locatedAtMillis = System.currentTimeMillis()
+                val fresh = UserLocation(loc.latitude, loc.longitude, prevCity)
+                userLocation = fresh
+                if (prevCity.isBlank()) {
+                    viewModelScope.launch {
+                        val city = withTimeoutOrNull(5_000) { resolveCity(loc.latitude, loc.longitude) }
+                        if (!city.isNullOrBlank()) {
+                            gpsCity = city
+                            if (userLocation === fresh) userLocation = fresh.copy(city = city)
+                        }
+                    }
+                }
+                fresh
             }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
             // Vorher führte eine Exception hier (z. B. SecurityException) zum Absturz der App.
-            null
+            cached
         } finally {
             isLocating = false
         }
@@ -264,7 +286,6 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             places = emptyList()
             selectedPlace = 0
             selectedConnection = 0
-            startStop = null
             activeMode = parsed.preferredMode
             activeTimeMillis = parsed.targetTimeMillis
             timeLabel = parsed.timeDisplayLabel
@@ -331,13 +352,12 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadRoute(loc: UserLocation, dest: GeoCandidate) {
         val timeHint = timeLabel?.let { " · $it" }.orEmpty()
-        status = "Suche nächste Haltestelle …"
-        val stop = runCatching { TransitApi.findNearestStop(loc.lat, loc.lon) }.getOrNull()
-        startStop = stop
         status = "Suche Verbindungen nach ${dest.name}$timeHint …"
         val results = TransitApi.fetchConnections(
-            startLat = stop?.lat ?: loc.lat,
-            startLon = stop?.lon ?: loc.lon,
+            // Direkt ab Standort: der Routenplaner wählt die beste Haltestelle inkl. Fußweg selbst.
+            // Vorher wurde erst separat die nächste Haltestelle gesucht (langsam, oft schlechtere Route).
+            startLat = loc.lat,
+            startLon = loc.lon,
             destLat = dest.lat,
             destLon = dest.lon,
             destName = dest.name,
@@ -348,7 +368,8 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         selectedConnection = 0
         status = when {
             results.isEmpty() -> "Keine Verbindung nach ${dest.name}$timeHint gefunden."
-            stop != null -> "Ab ${stop.name} → ${dest.fullDisplay}$timeHint"
+            results.first().firstTransitLeg != null ->
+                "Ab ${results.first().firstTransitLeg!!.fromStop} → ${dest.fullDisplay}$timeHint"
             else -> "Ziel: ${dest.fullDisplay}$timeHint"
         }
     }
