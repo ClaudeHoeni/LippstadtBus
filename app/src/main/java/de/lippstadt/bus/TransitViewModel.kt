@@ -108,14 +108,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     private fun setupTts() {
         tts.language = Locale.GERMANY
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) = setSpeaking(true)
-            override fun onDone(utteranceId: String?) = setSpeaking(false)
+            override fun onStart(utteranceId: String?) = updateSpeaking(true)
+            override fun onDone(utteranceId: String?) = updateSpeaking(false)
             @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) = setSpeaking(false)
+            override fun onError(utteranceId: String?) = updateSpeaking(false)
         })
     }
 
-    private fun setSpeaking(value: Boolean) {
+    private fun updateSpeaking(value: Boolean) {
         viewModelScope.launch { isSpeaking = value }
     }
 
