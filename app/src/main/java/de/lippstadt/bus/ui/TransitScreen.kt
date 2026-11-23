@@ -1,7 +1,6 @@
 package de.lippstadt.bus.ui
 
 import android.Manifest
-import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -71,7 +70,6 @@ import de.lippstadt.bus.data.distanceMeters
 import de.lippstadt.bus.data.formatDistance
 import de.lippstadt.bus.data.transferLabel
 import kotlin.math.abs
-import kotlinx.coroutines.delay
 
 private val QUICK_QUERIES = listOf("Nächste Haltestelle", "Zum Bahnhof", "Bäckerei", "Apotheke", "Supermarkt")
 
@@ -116,14 +114,6 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
             permissionLauncher.launch(
                 arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
             )
-        }
-    }
-
-    // Nach Start des Installers App schließen, damit sie nach dem Update nicht offen bleibt.
-    LaunchedEffect(vm.closeAfterInstall) {
-        if (vm.closeAfterInstall) {
-            delay(800) // Installer zuerst in den Vordergrund kommen lassen
-            (context as? Activity)?.finishAndRemoveTask()
         }
     }
 
