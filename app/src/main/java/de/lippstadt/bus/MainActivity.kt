@@ -13,7 +13,6 @@ import android.location.Geocoder
 import android.location.Location
 import android.net.Uri
 import android.os.Bundle
-import android.os.Looper
 import android.provider.AlarmClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -47,9 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import kotlinx.coroutines.Dispatchers
@@ -123,126 +119,6 @@ data class AppUpdateInfo(
     val downloadUrl: String
 )
 
-data class PoiCategory(
-    val label: String,
-    val fallbackKeyword: String,
-    val overpassQueries: List<String>,
-    val isTransitStopSearch: Boolean = false
-)
-
-data class ParsedTransitRequest(
-    val destination: String,
-    val poiCategory: PoiCategory? = null,
-    val preferredMode: String? = null,
-    val modeDisplayName: String? = null,
-    val targetTimeMillis: Long? = null,
-    val timeDisplayLabel: String? = null
-)
-
-private fun parseNaturalTransitRequest(rawInput: String): ParsedTransitRequest {
-    val cleaned = sanitizeTranscriptWords(rawInput)
-        .replace(Regex("""(?i)^(ich möchte|ich will|bring mich|fahre mich|zeig mir|suche|wo ist|nächste|naechste)\s+"""), "")
-        .trim()
-    val lower = cleaned.lowercase(Locale.GERMANY)
-
-    val category = when {
-        Regex("""\b(haltestelle|bushaltestelle|bahnhof|station)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Haltestelle",
-                fallbackKeyword = "Haltestelle",
-                overpassQueries = listOf(
-                    """["highway"="bus_stop"]""",
-                    """["public_transport"="platform"]""",
-                    """["railway"="station"]"""
-                ),
-                isTransitStopSearch = true
-            )
-        Regex("""\b(bäcker|baecker|bäckerei|baeckerei)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Bäckerei",
-                fallbackKeyword = "Bäckerei",
-                overpassQueries = listOf("""["shop"="bakery"]""")
-            )
-        Regex("""\b(supermarkt|aldi|lidl|rewe|edeka|penny|netto)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Supermarkt",
-                fallbackKeyword = "Supermarkt",
-                overpassQueries = listOf("""["shop"="supermarket"]""", """["shop"="convenience"]""")
-            )
-        Regex("""\b(spätkauf|spaetkauf|kiosk)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Spätkauf",
-                fallbackKeyword = "Kiosk",
-                overpassQueries = listOf("""["shop"="kiosk"]""", """["shop"="convenience"]""")
-            )
-        Regex("""\b(apotheke)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Apotheke",
-                fallbackKeyword = "Apotheke",
-                overpassQueries = listOf("""["amenity"="pharmacy"]""")
-            )
-        Regex("""\b(arzt|doktor|praxis)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Arzt",
-                fallbackKeyword = "Arzt",
-                overpassQueries = listOf("""["amenity"="doctors"]""", """["amenity"="clinic"]""")
-            )
-        Regex("""\b(drogerie|rossmann|dm)\b""").containsMatchIn(lower) ->
-            PoiCategory(
-                label = "Drogerie",
-                fallbackKeyword = "Drogerie",
-                overpassQueries = listOf("""["shop"="chemist"]""")
-            )
-        else -> null
-    }
-
-    val preferredMode = when {
-        Regex("""\b(bus)\b""").containsMatchIn(lower) -> "BUS"
-        Regex("""\b(s-bahn|s\s*bahn)\b""").containsMatchIn(lower) -> "SUBURBAN"
-        Regex("""\b(tram|straßenbahn|strassenbahn)\b""").containsMatchIn(lower) -> "TRAM"
-        Regex("""\b(zug|regionalbahn|re|rb)\b""").containsMatchIn(lower) -> "REGIONAL_RAIL"
-        else -> null
-    }
-
-    val modeDisplay = when (preferredMode) {
-        "BUS" -> "Bus"
-        "SUBURBAN" -> "S-Bahn"
-        "TRAM" -> "Tram"
-        "REGIONAL_RAIL" -> "Zug"
-        else -> null
-    }
-
-    return ParsedTransitRequest(
-        destination = cleaned.ifBlank { rawInput },
-        poiCategory = category,
-        preferredMode = preferredMode,
-        modeDisplayName = modeDisplay
-    )
-}
-
-private fun parseIsoMillis(isoStr: String): Long? {
-    if (isoStr.isBlank()) return null
-    val patterns = listOf(
-        "yyyy-MM-dd'T'HH:mm:ssXXX",
-        "yyyy-MM-dd'T'HH:mm:ss.SSSX",
-        "yyyy-MM-dd'T'HH:mm:ss'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss"
-    )
-    for (pattern in patterns) {
-        try {
-            val fmt = SimpleDateFormat(pattern, Locale.US).apply {
-                if (pattern.endsWith("'Z'")) {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }
-            }
-            val parsed = fmt.parse(isoStr)
-            if (parsed != null) return parsed.time
-        } catch (_: Exception) {
-        }
-    }
-    return null
-}
-
 private fun sanitizeTranscriptWords(text: String): String {
     return text
         .replace(Regex("""(?i)\b(ÖPNV|OEPNV|U-Bahn|U\s*-?\s*Bahn\s*[A-Z0-9]*|UBahn)\b"""), "")
@@ -261,14 +137,15 @@ private fun buildTransferOrWalkWarningText(conn: TransitConnection): String? {
     val hasTransfer = conn.transfersCount > 0 || conn.legs.any { it.isTransfer }
     val lastLeg = conn.legs.lastOrNull()
     val hasFinalWalk = lastLeg?.isWalk == true
+    val walkMeters = lastLeg?.distanceMeters ?: 0
 
     return when {
         hasTransfer && hasFinalWalk ->
-            "⚠️ Achtung: Verbindung enthält Umstieg und Fußweg zum Ziel (${lastLeg.distanceMeters} m)."
+            "⚠️ Achtung: Verbindung enthält Umstieg und Fußweg zum Ziel ($walkMeters m)."
         hasTransfer ->
             "⚠️ Achtung: Verbindung enthält mindestens einen Umstieg."
         hasFinalWalk ->
-            "⚠️ Achtung: Letzter Abschnitt ist ein Fußweg zum Ziel (${lastLeg.distanceMeters} m)."
+            "⚠️ Achtung: Letzter Abschnitt ist ein Fußweg zum Ziel ($walkMeters m)."
         else -> null
     }
 }
