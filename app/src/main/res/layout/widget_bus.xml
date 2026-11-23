@@ -3,31 +3,35 @@
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#F5FFFFFF"
+    android:background="@drawable/widget_background"
     android:gravity="center"
     android:orientation="horizontal"
     android:padding="8dp">
 
     <ImageView
-        android:layout_width="48dp"
-        android:layout_height="48dp"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
         android:contentDescription="Pfeil links"
         android:scaleType="fitCenter"
-        android:src="@drawable/widget_arrow_left" />
+        android:src="@drawable/widget_arrow_left"
+        android:tint="#F7A43B" />
 
     <ImageView
-        android:layout_width="56dp"
-        android:layout_height="56dp"
-        android:layout_marginLeft="12dp"
-        android:layout_marginRight="12dp"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:background="@drawable/widget_mic_ring"
         android:contentDescription="Mikrofon starten"
+        android:padding="4dp"
         android:scaleType="fitCenter"
         android:src="@drawable/widget_mic_center" />
 
     <ImageView
-        android:layout_width="48dp"
-        android:layout_height="48dp"
+        android:layout_width="44dp"
+        android:layout_height="44dp"
         android:contentDescription="Pfeil rechts"
         android:scaleType="fitCenter"
-        android:src="@drawable/widget_arrow_right" />
+        android:src="@drawable/widget_arrow_right"
+        android:tint="#F7A43B" />
 </LinearLayout>
