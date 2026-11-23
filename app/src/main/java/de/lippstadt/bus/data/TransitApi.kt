@@ -38,6 +38,24 @@ object TransitApi {
         }
     }
 
+    internal fun httpPost(urlString: String, formBody: String, timeoutMs: Int = 10_000): String {
+        val conn = URL(urlString).openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.setRequestProperty("User-Agent", USER_AGENT)
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            conn.connectTimeout = timeoutMs
+            conn.readTimeout = timeoutMs
+            conn.outputStream.use { it.write(formBody.toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            if (code !in 200..299) throw IllegalStateException("HTTP $code")
+            return conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     // ------------------------------------------------------------ Reverse-Geocoding
 
     suspend fun reverseCityName(lat: Double, lon: Double): String? = withContext(Dispatchers.IO) {
@@ -94,54 +112,58 @@ object TransitApi {
         }
 
         if (found.isEmpty()) found += overpassSearch(centerLat, centerLon, category, radiusMeters)
+        if (found.isEmpty()) found += photonSearch(centerLat, centerLon, category)
 
         if (found.isEmpty()) {
+            // Letzter Ausweg: Volltextsuche. Nur Treffer im Umkreis übernehmen – vorher kam hier
+            // z. B. "Supermarkt Berlin" mit einem beliebigen Treffer 3 km entfernt zurück.
             val keyword = sanitizeTranscriptWords(category.fallbackKeyword)
             val q = if (cityContext.isNotBlank()) "$keyword $cityContext" else keyword
             found += geocode(q, centerLat, centerLon, cityContext)
+                .filter { distanceMeters(centerLat, centerLon, it.lat, it.lon) <= radiusMeters * 1.5 }
         }
 
         dedupe(found.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }, minMeters = 40.0)
     }
 
+    private val OVERPASS_ENDPOINTS = listOf(
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+    )
+
+    /**
+     * Sucht erst im engen Umkreis (schnell, auch in Großstädten), dann im vollen Radius.
+     * Fällt ein Server aus, wird der nächste probiert. POST statt GET, längere Timeouts.
+     */
     private fun overpassSearch(lat: Double, lon: Double, category: PoiCategory, radius: Int): List<GeoCandidate> {
-        val union = category.overpassQueries.joinToString("\n") { f ->
-            "node$f(around:$radius,$lat,$lon);\nway$f(around:$radius,$lat,$lon);"
-        }
-        val query = "[out:json][timeout:12];\n(\n$union\n);\nout center 25;"
-        val endpoints = listOf(
-            "https://overpass-api.de/api/interpreter",
-            "https://overpass.kumi.systems/api/interpreter",
-            "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
-        )
-        for (ep in endpoints) {
-            val list = runCatching {
-                val root = JSONObject(httpGet("$ep?data=${enc(query)}", timeoutMs = 14_000))
-                val elements = root.optJSONArray("elements") ?: return@runCatching emptyList<GeoCandidate>()
-                (0 until elements.length()).mapNotNull { i ->
-                    val el = elements.optJSONObject(i) ?: return@mapNotNull null
-                    val tags = el.optJSONObject("tags") ?: return@mapNotNull null
-                    val center = el.optJSONObject("center")
-                    val pLat = if (el.has("lat")) el.optDouble("lat") else center?.optDouble("lat") ?: Double.NaN
-                    val pLon = if (el.has("lon")) el.optDouble("lon") else center?.optDouble("lon") ?: Double.NaN
-                    if (pLat.isNaN() || pLon.isNaN()) return@mapNotNull null
-                    val rawName = sanitizeTranscriptWords(tags.optString("name", "").trim())
-                    val street = tags.optString("addr:street", "").trim()
-                    val house = tags.optString("addr:housenumber", "").trim()
-                    val dist = distanceMeters(lat, lon, pLat, pLon).toInt()
-                    val addr = listOf(street, house).filter { it.isNotBlank() }.joinToString(" ")
-                    GeoCandidate(
-                        name = rawName.ifBlank { category.label },
-                        areaLabel = if (addr.isNotBlank()) "$addr · ca. $dist m" else "ca. $dist m entfernt",
-                        lat = pLat,
-                        lon = pLon,
-                        isStop = category.isTransitStopSearch
-                    )
-                }
-            }.getOrDefault(emptyList())
-            if (list.isNotEmpty()) return list
+        val radii = listOf(minOf(1000, radius), radius).distinct()
+        for (r in radii) {
+            val query = PoiParsers.buildOverpassQuery(category, lat, lon, r)
+            var answered = false
+            for (ep in OVERPASS_ENDPOINTS) {
+                val list = runCatching {
+                    PoiParsers.parseOverpass(httpPost(ep, "data=${enc(query)}", timeoutMs = 20_000), lat, lon, category)
+                }.getOrNull() ?: continue
+                answered = true
+                if (list.isNotEmpty()) return list
+                break // Server hat geantwortet, nur nichts gefunden → Radius vergrößern
+            }
+            if (!answered) return emptyList()
         }
         return emptyList()
+    }
+
+    /** Ausweich-Suche über Photon (komoot), gefiltert nach OSM-Tag und nach Nähe gewichtet. */
+    private fun photonSearch(lat: Double, lon: Double, category: PoiCategory): List<GeoCandidate> {
+        val tags = PoiParsers.photonTags(category)
+        if (tags.isEmpty()) return emptyList()
+        val tagParams = tags.joinToString("") { "&osm_tag=${enc(it)}" }
+        val url = "https://photon.komoot.io/api/?q=${enc(category.fallbackKeyword)}" +
+            "&lat=$lat&lon=$lon&location_bias_scale=0.1&zoom=16&limit=15&lang=de$tagParams"
+        return runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 12_000), lat, lon, category) }
+            .getOrDefault(emptyList())
+            .filter { distanceMeters(lat, lon, it.lat, it.lon) <= 5_000 }
     }
 
     suspend fun geocode(
