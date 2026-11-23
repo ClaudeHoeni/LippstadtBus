@@ -1,4 +1,4 @@
-﻿package de.lippstadt.bus
+package de.lippstadt.bus
 
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager

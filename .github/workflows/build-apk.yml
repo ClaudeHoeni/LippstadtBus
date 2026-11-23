@@ -49,6 +49,6 @@ jobs:
         with:
           tag_name: v-latest
           name: Aktuelle Version (${{ github.run_number }})
-          body: "Umgebungssuche, Haltestellenauswahl, Zeitangaben und Wecker korrigiert. Automatischer Build Nr. ${{ github.run_number }}."
+          body: "Neues Dark-UI, korrekte Ortszeiten, stabilere Suche. Automatischer Build Nr. ${{ github.run_number }}."
           files: ABFAHRTEN.apk
           fail_on_unmatched_files: true

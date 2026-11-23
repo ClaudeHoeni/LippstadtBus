@@ -1,0 +1,419 @@
+package de.lippstadt.bus
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Application
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.location.Geocoder
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import de.lippstadt.bus.data.AppUpdateInfo
+import de.lippstadt.bus.data.GeoCandidate
+import de.lippstadt.bus.data.MotisPlanParser
+import de.lippstadt.bus.data.TransitApi
+import de.lippstadt.bus.data.TransitConnection
+import de.lippstadt.bus.data.buildSpokenSummary
+import de.lippstadt.bus.data.distanceMeters
+import de.lippstadt.bus.data.parseNaturalTransitRequest
+import de.lippstadt.bus.data.sanitizeTranscriptWords
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.Locale
+
+data class UserLocation(val lat: Double, val lon: Double, val city: String)
+
+/**
+ * Hält den kompletten Zustand der App. Überlebt Bildschirmdrehungen –
+ * vorher gingen Suchergebnisse bei jeder Drehung verloren und TTS/Spracherkennung
+ * wurden jedes Mal neu erzeugt.
+ */
+class TransitViewModel(app: Application) : AndroidViewModel(app) {
+
+    private val ctx get() = getApplication<Application>()
+
+    var query by mutableStateOf("")
+    var status by mutableStateOf("Bereit. Ziel, Haltestelle, Arzt oder Bäckerei sagen.")
+        private set
+    var isLoading by mutableStateOf(false)
+        private set
+    var isListening by mutableStateOf(false)
+        private set
+    var isSpeaking by mutableStateOf(false)
+        private set
+
+    var gpsCity by mutableStateOf<String?>(null)
+        private set
+    var userLocation by mutableStateOf<UserLocation?>(null)
+        private set
+    var isLocating by mutableStateOf(false)
+        private set
+
+    var connections by mutableStateOf<List<TransitConnection>>(emptyList())
+        private set
+    var selectedConnection by mutableIntStateOf(0)
+        private set
+    var places by mutableStateOf<List<GeoCandidate>>(emptyList())
+        private set
+    var selectedPlace by mutableIntStateOf(0)
+        private set
+    var startStop by mutableStateOf<GeoCandidate?>(null)
+        private set
+    var timeLabel by mutableStateOf<String?>(null)
+        private set
+
+    var availableUpdate by mutableStateOf<AppUpdateInfo?>(null)
+        private set
+    var isUpdating by mutableStateOf(false)
+        private set
+
+    val activeConnection: TransitConnection? get() = connections.getOrNull(selectedConnection)
+    val activePlace: GeoCandidate? get() = places.getOrNull(selectedPlace)
+
+    private var searchJob: Job? = null
+    private var activeMode: String? = null
+    private var activeTimeMillis: Long? = null
+    private var isPoiResult = false
+
+    private val fusedLocation = LocationServices.getFusedLocationProviderClient(app)
+
+    // ------------------------------------------------------------ Sprachausgabe
+
+    private var ttsReady = false
+    private val tts: TextToSpeech = TextToSpeech(app) { st ->
+        if (st == TextToSpeech.SUCCESS) {
+            ttsReady = true
+            setupTts()
+        }
+    }
+
+    private fun setupTts() {
+        tts.language = Locale.GERMANY
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = updateSpeaking(true)
+            override fun onDone(utteranceId: String?) = updateSpeaking(false)
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) = updateSpeaking(false)
+        })
+    }
+
+    private fun updateSpeaking(value: Boolean) {
+        viewModelScope.launch { isSpeaking = value }
+    }
+
+    fun speak(text: String) {
+        if (!ttsReady) {
+            status = "Sprachausgabe auf diesem Gerät nicht verfügbar."
+            return
+        }
+        tts.speak(sanitizeTranscriptWords(text), TextToSpeech.QUEUE_FLUSH, null, "summary")
+    }
+
+    fun stopSpeaking() {
+        if (ttsReady) tts.stop()
+        isSpeaking = false
+    }
+
+    fun toggleSpeakActive() {
+        val conn = activeConnection ?: run {
+            status = "Noch keine Verbindung zum Vorlesen."
+            return
+        }
+        if (isSpeaking) stopSpeaking() else speak(buildSpokenSummary(conn))
+    }
+
+    // ------------------------------------------------------------ Spracherkennung
+
+    private var recognizer: SpeechRecognizer? = null
+
+    /** Muss auf dem Main-Thread aufgerufen werden und setzt RECORD_AUDIO voraus. */
+    fun startVoiceInput() {
+        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
+            status = "Spracherkennung auf diesem Gerät nicht verfügbar."
+            return
+        }
+        if (isListening) {
+            recognizer?.stopListening()
+            isListening = false
+            return
+        }
+        stopSpeaking()
+        val rec = recognizer ?: SpeechRecognizer.createSpeechRecognizer(ctx).also { recognizer = it }
+        rec.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                isListening = true
+                status = "Höre zu … Ziel oder Wunsch nennen."
+            }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { isListening = false }
+            override fun onError(error: Int) {
+                isListening = false
+                status = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Nichts verstanden – bitte nochmal."
+                    SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Spracherkennung: kein Netz."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mikrofon-Berechtigung fehlt."
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Spracherkennung ist beschäftigt."
+                    else -> "Spracheingabe fehlgeschlagen (Code $error)."
+                }
+            }
+            override fun onResults(results: Bundle?) {
+                isListening = false
+                val spoken = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                if (!spoken.isNullOrBlank()) search(spoken)
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { query = it }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "de-DE")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+        rec.startListening(intent)
+    }
+
+    // ------------------------------------------------------------ Standort
+
+    fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    fun refreshLocation() {
+        viewModelScope.launch { locate() }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun locate(): UserLocation? {
+        if (!hasLocationPermission()) return null
+        isLocating = true
+        return try {
+            val loc = runCatching {
+                fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+            }.getOrNull() ?: runCatching { fusedLocation.lastLocation.await() }.getOrNull()
+            if (loc == null) {
+                null
+            } else {
+                val city = resolveCity(loc.latitude, loc.longitude).orEmpty()
+                if (city.isNotBlank()) gpsCity = city
+                UserLocation(loc.latitude, loc.longitude, city).also { userLocation = it }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // Vorher führte eine Exception hier (z. B. SecurityException) zum Absturz der App.
+            null
+        } finally {
+            isLocating = false
+        }
+    }
+
+    private suspend fun resolveCity(lat: Double, lon: Double): String? {
+        val local = withContext(Dispatchers.IO) {
+            runCatching {
+                @Suppress("DEPRECATION")
+                Geocoder(ctx, Locale.GERMANY).getFromLocation(lat, lon, 1)?.firstOrNull()
+                    ?.let { it.locality ?: it.subAdminArea }
+            }.getOrNull()
+        }
+        return (local ?: TransitApi.reverseCityName(lat, lon))?.let { sanitizeTranscriptWords(it) }
+    }
+
+    // ------------------------------------------------------------ Suche
+
+    fun search(rawOverride: String? = null) {
+        val raw = sanitizeTranscriptWords(rawOverride ?: query)
+        if (raw.isBlank()) {
+            status = "Bitte ein Ziel oder eine Frage eingeben."
+            return
+        }
+        stopSpeaking()
+        val parsed = parseNaturalTransitRequest(raw)
+        val destText = sanitizeTranscriptWords(parsed.destination)
+        query = destText
+
+        // Laufende Suche abbrechen – sonst konnten sich alte und neue Ergebnisse überschreiben.
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            isLoading = true
+            connections = emptyList()
+            places = emptyList()
+            selectedPlace = 0
+            selectedConnection = 0
+            startStop = null
+            activeMode = parsed.preferredMode
+            activeTimeMillis = parsed.targetTimeMillis
+            timeLabel = parsed.timeDisplayLabel
+            try {
+                status = "Ermittle Standort …"
+                val loc = locate()
+                if (loc == null) {
+                    status = if (hasLocationPermission()) "GPS-Standort nicht verfügbar. Standortdienst aktivieren."
+                    else "Standort-Berechtigung fehlt."
+                    return@launch
+                }
+
+                val category = parsed.poiCategory
+                if (category != null) {
+                    // Bei "Apotheke am Markt" um den Ankerort herum suchen statt um den Nutzer.
+                    var centerLat = loc.lat
+                    var centerLon = loc.lon
+                    val anchor = parsed.poiAnchorPlace
+                    if (anchor != null) {
+                        status = "Suche $anchor …"
+                        TransitApi.geocode(anchor, loc.lat, loc.lon, loc.city).firstOrNull()?.let {
+                            centerLat = it.lat
+                            centerLon = it.lon
+                        }
+                    }
+                    status = "Suche ${category.label} …"
+                    val pois = TransitApi.searchNearbyPois(centerLat, centerLon, category, loc.city, radiusMeters = 2500)
+                    val pool = if (category.isTransitStopSearch) pois else pois.filter { !it.isStop }.ifEmpty { pois }
+                    val sorted = pool.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
+                    if (sorted.isEmpty()) {
+                        status = "Keine ${category.label} gefunden."
+                        return@launch
+                    }
+                    places = sorted
+                    isPoiResult = true
+                    showWalkTo(loc, sorted.first())
+                } else {
+                    status = "Suche „$destText“ …"
+                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, loc.city)
+                    if (candidates.isEmpty()) {
+                        status = "Ziel „$destText“ nicht gefunden."
+                        return@launch
+                    }
+                    places = candidates
+                    isPoiResult = false
+                    loadRoute(loc, candidates.first())
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                status = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    private fun showWalkTo(loc: UserLocation, dest: GeoCandidate) {
+        val conn = MotisPlanParser.directWalk(loc.lat, loc.lon, dest.fullDisplay, dest.lat, dest.lon, System.currentTimeMillis())
+        connections = listOf(conn)
+        selectedConnection = 0
+        status = "${dest.name} · ${conn.totalWalkMeters} m zu Fuß"
+    }
+
+    private suspend fun loadRoute(loc: UserLocation, dest: GeoCandidate) {
+        val timeHint = timeLabel?.let { " · $it" }.orEmpty()
+        status = "Suche nächste Haltestelle …"
+        val stop = runCatching { TransitApi.findNearestStop(loc.lat, loc.lon) }.getOrNull()
+        startStop = stop
+        status = "Suche Verbindungen nach ${dest.name}$timeHint …"
+        val results = TransitApi.fetchConnections(
+            startLat = stop?.lat ?: loc.lat,
+            startLon = stop?.lon ?: loc.lon,
+            destLat = dest.lat,
+            destLon = dest.lon,
+            destName = dest.name,
+            preferredMode = activeMode,
+            departureMillis = activeTimeMillis
+        )
+        connections = results
+        selectedConnection = 0
+        status = when {
+            results.isEmpty() -> "Keine Verbindung nach ${dest.name}$timeHint gefunden."
+            stop != null -> "Ab ${stop.name} → ${dest.fullDisplay}$timeHint"
+            else -> "Ziel: ${dest.fullDisplay}$timeHint"
+        }
+    }
+
+    fun selectConnection(index: Int) {
+        if (index !in connections.indices) return
+        stopSpeaking()
+        selectedConnection = index
+    }
+
+    fun selectPlace(index: Int) {
+        val dest = places.getOrNull(index) ?: return
+        selectedPlace = index
+        val loc = userLocation ?: return
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            isLoading = true
+            try {
+                if (isPoiResult) showWalkTo(loc, dest) else loadRoute(loc, dest)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                status = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    fun postStatus(message: String) {
+        status = message
+    }
+
+    // ------------------------------------------------------------ Update
+
+    fun checkForUpdate() {
+        viewModelScope.launch { availableUpdate = TransitApi.checkForUpdate(BuildConfig.VERSION_CODE) }
+    }
+
+    fun installUpdate() {
+        val upd = availableUpdate ?: return
+        if (isUpdating) return
+        if (!SystemActions.ensureInstallPermission(ctx)) {
+            status = "Bitte „Unbekannte Apps installieren“ erlauben und erneut tippen."
+            return
+        }
+        viewModelScope.launch {
+            isUpdating = true
+            try {
+                val apk = TransitApi.downloadApk(upd, File(ctx.cacheDir, "update.apk"))
+                SystemActions.installApk(ctx, apk)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                status = "Update-Fehler: ${e.localizedMessage ?: ""}"
+            } finally {
+                isUpdating = false
+            }
+        }
+    }
+
+    override fun onCleared() {
+        recognizer?.destroy()
+        tts.stop()
+        tts.shutdown()
+        super.onCleared()
+    }
+}
