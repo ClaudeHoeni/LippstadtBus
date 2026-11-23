@@ -1,6 +1,12 @@
 package de.lippstadt.bus.data
 
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -77,11 +83,6 @@ object TransitApi {
 
     // ------------------------------------------------------------ Haltestellen / Orte
 
-    suspend fun findNearestStop(lat: Double, lon: Double, maxMeters: Int = 1500): GeoCandidate? =
-        searchNearbyPois(lat, lon, TRANSIT_STOP_CATEGORY, cityContext = "", radiusMeters = maxMeters)
-            .filter { it.isStop && distanceMeters(lat, lon, it.lat, it.lon) <= maxMeters }
-            .minByOrNull { distanceMeters(lat, lon, it.lat, it.lon) }
-
     suspend fun searchNearbyPois(
         centerLat: Double,
         centerLon: Double,
@@ -111,12 +112,19 @@ object TransitApi {
             }
         }
 
-        if (found.isEmpty()) found += overpassSearch(centerLat, centerLon, category, radiusMeters)
-        if (found.isEmpty()) found += photonSearch(centerLat, centerLon, category)
+        if (found.isEmpty()) {
+            // Overpass (alle Server parallel) und Photon gleichzeitig starten –
+            // vorher liefen bis zu 6 Anfragen à 20 s nacheinander.
+            val photon = ioScope.async { photonSearch(centerLat, centerLon, category) }
+            val overpass = overpassSearch(centerLat, centerLon, category, radiusMeters)
+            found += overpass.ifEmpty {
+                withTimeoutOrNull(4_000) { photon.await() } ?: emptyList()
+            }
+            if (overpass.isNotEmpty()) photon.cancel()
+        }
 
         if (found.isEmpty()) {
-            // Letzter Ausweg: Volltextsuche. Nur Treffer im Umkreis übernehmen – vorher kam hier
-            // z. B. "Supermarkt Berlin" mit einem beliebigen Treffer 3 km entfernt zurück.
+            // Letzter Ausweg: Volltextsuche, nur Treffer im Umkreis.
             val keyword = sanitizeTranscriptWords(category.fallbackKeyword)
             val q = if (cityContext.isNotBlank()) "$keyword $cityContext" else keyword
             found += geocode(q, centerLat, centerLon, cityContext)
@@ -126,32 +134,43 @@ object TransitApi {
         dedupe(found.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }, minMeters = 40.0)
     }
 
+    /** Eigener Scope, damit blockierende HTTP-Aufrufe nicht abgewartet werden müssen, wenn ein anderer schneller war. */
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Startet alle Aufgaben parallel und liefert das erste Ergebnis != null (oder null nach [timeoutMs]). */
+    private suspend fun <T : Any> firstResult(timeoutMs: Long, tasks: List<() -> T?>): T? {
+        val channel = Channel<T?>(tasks.size)
+        val jobs = tasks.map { task -> ioScope.launch { channel.send(runCatching(task).getOrNull()) } }
+        return try {
+            withTimeoutOrNull(timeoutMs) {
+                var result: T? = null
+                for (i in tasks.indices) {
+                    result = channel.receive()
+                    if (result != null) break
+                }
+                result
+            }
+        } finally {
+            jobs.forEach { it.cancel() }
+        }
+    }
+
     private val OVERPASS_ENDPOINTS = listOf(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.private.coffee/api/interpreter",
         "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
     )
 
-    /**
-     * Sucht erst im engen Umkreis (schnell, auch in Großstädten), dann im vollen Radius.
-     * Fällt ein Server aus, wird der nächste probiert. POST statt GET, längere Timeouts.
-     */
-    private fun overpassSearch(lat: Double, lon: Double, category: PoiCategory, radius: Int): List<GeoCandidate> {
-        val radii = listOf(minOf(1000, radius), radius).distinct()
-        for (r in radii) {
-            val query = PoiParsers.buildOverpassQuery(category, lat, lon, r)
-            var answered = false
-            for (ep in OVERPASS_ENDPOINTS) {
-                val list = runCatching {
-                    PoiParsers.parseOverpass(httpPost(ep, "data=${enc(query)}", timeoutMs = 20_000), lat, lon, category)
-                }.getOrNull() ?: continue
-                answered = true
-                if (list.isNotEmpty()) return list
-                break // Server hat geantwortet, nur nichts gefunden → Radius vergrößern
+    private suspend fun overpassSearch(lat: Double, lon: Double, category: PoiCategory, radius: Int): List<GeoCandidate> {
+        val query = PoiParsers.buildOverpassQuery(category, lat, lon, radius)
+        val body = "data=${enc(query)}"
+        val tasks = OVERPASS_ENDPOINTS.map { ep ->
+            {
+                PoiParsers.parseOverpass(httpPost(ep, body, timeoutMs = 9_000), lat, lon, category)
+                    .takeIf { it.isNotEmpty() }
             }
-            if (!answered) return emptyList()
         }
-        return emptyList()
+        return firstResult(10_000, tasks) ?: emptyList()
     }
 
     /** Ausweich-Suche über Photon (komoot), gefiltert nach OSM-Tag und nach Nähe gewichtet. */
@@ -161,7 +180,7 @@ object TransitApi {
         val tagParams = tags.joinToString("") { "&osm_tag=${enc(it)}" }
         val url = "https://photon.komoot.io/api/?q=${enc(category.fallbackKeyword)}" +
             "&lat=$lat&lon=$lon&location_bias_scale=0.1&zoom=16&limit=15&lang=de$tagParams"
-        return runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 12_000), lat, lon, category) }
+        return runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 8_000), lat, lon, category) }
             .getOrDefault(emptyList())
             .filter { distanceMeters(lat, lon, it.lat, it.lon) <= 5_000 }
     }
@@ -190,7 +209,6 @@ object TransitApi {
                 val lat = obj.optDouble("lat", Double.NaN)
                 val lon = obj.optDouble("lon", Double.NaN)
                 if (lat.isNaN() || lon.isNaN()) continue
-                if (distanceMeters(biasLat, biasLon, lat, lon) > 120_000) continue
                 val type = obj.optString("type", "").uppercase(Locale.US)
                 raw += GeoCandidate(
                     name = sanitizeTranscriptWords(obj.optString("name", cleanQuery).trim()),
@@ -203,24 +221,7 @@ object TransitApi {
             }
         }
 
-        val lowerQuery = cleanQuery.lowercase(Locale.GERMANY)
-        fun score(c: GeoCandidate): Int {
-            val name = c.name.lowercase(Locale.GERMANY)
-            val full = "$name ${c.areaLabel.lowercase(Locale.GERMANY)}"
-            val exact = when {
-                name == lowerQuery -> 40
-                name.contains(lowerQuery) -> 25
-                else -> 0
-            }
-            return exact + queryWords.count { name.contains(it) } * 15 +
-                queryWords.count { full.contains(it) } * 8 +
-                if (c.isStop) 5 else if (c.isStreet) 2 else 0
-        }
-
-        val sorted = raw.sortedWith(
-            compareByDescending<GeoCandidate> { score(it) }
-                .thenBy { distanceMeters(biasLat, biasLon, it.lat, it.lon) }
-        )
+        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon)
         dedupe(sorted, minMeters = 300.0)
     }
 
