@@ -32,4 +32,13 @@ class GeoRankingTest {
         val result = GeoRanking.rank(listOf(hamburg), "Hamburg Hbf", lat, lon)
         assertEquals(listOf(hamburg), result)
     }
+
+    @Test
+    fun localMatchBeatsFarExactMatch() {
+        // Lippstadt: "Tivoli" darf nicht in Metz landen
+        val metz = GeoCandidate("TIVOLI", "57000 Moselle, Metz", 49.11, 6.18, isStop = true)
+        val lp = GeoCandidate("Tivoli", "Lippstadt", 51.6770, 8.3500, isStop = true)
+        val result = GeoRanking.rank(listOf(metz, lp), "Tivoli", 51.6735, 8.3446)
+        assertEquals(listOf(lp), result)
+    }
 }

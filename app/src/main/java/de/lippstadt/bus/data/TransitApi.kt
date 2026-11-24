@@ -3,7 +3,10 @@ package de.lippstadt.bus.data
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
@@ -195,34 +198,45 @@ object TransitApi {
         if (cleanQuery.isBlank()) return@withContext emptyList()
         val queryWords = cleanQuery.lowercase(Locale.GERMANY).split(Regex("\\s+")).filter { it.length >= 3 }
 
+        // Transitous gewichtet den Standort kaum ("Tivoli" -> Metz). Daher zusätzlich mit Stadtnamen
+        // und parallel Photon mit starker Standort-Gewichtung abfragen.
         val queries = mutableListOf(cleanQuery)
-        if (queryWords.size == 1 && cityContext.isNotBlank() && !cleanQuery.contains(cityContext, true)) {
+        if (queryWords.size <= 2 && cityContext.isNotBlank() && !cleanQuery.contains(cityContext, true)) {
             queries += "$cleanQuery, $cityContext"
         }
-
-        val raw = mutableListOf<GeoCandidate>()
-        for (q in queries) {
-            val arr = runCatching { JSONArray(httpGet("$BASE/geocode?text=${enc(q)}&place=$biasLat,$biasLon")) }
-                .getOrNull() ?: continue
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val lat = obj.optDouble("lat", Double.NaN)
-                val lon = obj.optDouble("lon", Double.NaN)
-                if (lat.isNaN() || lon.isNaN()) continue
-                val type = obj.optString("type", "").uppercase(Locale.US)
-                raw += GeoCandidate(
-                    name = sanitizeTranscriptWords(obj.optString("name", cleanQuery).trim()),
-                    areaLabel = areaLabel(obj),
-                    lat = lat,
-                    lon = lon,
-                    isStop = type == "STOP",
-                    isStreet = type == "ADDRESS"
-                )
-            }
+        val tasks: List<() -> List<GeoCandidate>> = queries.map { q -> { transitousGeocode(q, biasLat, biasLon) } } +
+            listOf({ photonGeocode(cleanQuery, biasLat, biasLon) })
+        val raw = coroutineScope {
+            tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
         }
 
-        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon)
+        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon, cityContext)
         dedupe(sorted, minMeters = 300.0)
+    }
+
+    private fun transitousGeocode(q: String, biasLat: Double, biasLon: Double): List<GeoCandidate> {
+        val arr = JSONArray(httpGet("$BASE/geocode?text=${enc(q)}&place=$biasLat,$biasLon"))
+        return (0 until arr.length()).mapNotNull { i ->
+            val obj = arr.optJSONObject(i) ?: return@mapNotNull null
+            val lat = obj.optDouble("lat", Double.NaN)
+            val lon = obj.optDouble("lon", Double.NaN)
+            if (lat.isNaN() || lon.isNaN()) return@mapNotNull null
+            val type = obj.optString("type", "").uppercase(Locale.US)
+            GeoCandidate(
+                name = sanitizeTranscriptWords(obj.optString("name", q).trim()),
+                areaLabel = areaLabel(obj),
+                lat = lat,
+                lon = lon,
+                isStop = type == "STOP",
+                isStreet = type == "ADDRESS"
+            )
+        }
+    }
+
+    private fun photonGeocode(q: String, biasLat: Double, biasLon: Double): List<GeoCandidate> {
+        val url = "https://photon.komoot.io/api/?q=${enc(q)}&lat=$biasLat&lon=$biasLon" +
+            "&location_bias_scale=0.0&zoom=14&limit=10&lang=de"
+        return PoiParsers.parsePhotonPlaces(httpGet(url, timeoutMs = 8_000))
     }
 
     private fun areaLabel(obj: JSONObject): String {

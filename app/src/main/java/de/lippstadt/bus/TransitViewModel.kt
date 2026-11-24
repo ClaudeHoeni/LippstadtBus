@@ -261,8 +261,34 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         gpsActive = false
     }
 
+    /** true, wenn der Nutzer GPS bewusst ausgeschaltet hat – dann beim App-Start nicht wieder einschalten. */
+    private var gpsDisabledByUser = false
+
     fun toggleGps() {
-        if (gpsActive) stopGps() else refreshLocation()
+        if (gpsActive) {
+            gpsDisabledByUser = true
+            stopGps()
+        } else {
+            gpsDisabledByUser = false
+            refreshLocation()
+        }
+    }
+
+    /** Beim Öffnen der App: GPS direkt einschalten (außer der Nutzer hat es ausgeschaltet). */
+    fun onAppVisible() {
+        checkForUpdate()
+        if (!gpsDisabledByUser && hasLocationPermission()) refreshLocation()
+    }
+
+    /** Stadtname für die Suche; wartet notfalls kurz darauf (wurde sonst leer -> "Tivoli" in Metz). */
+    private suspend fun cityFor(loc: UserLocation): String {
+        loc.city.ifBlank { gpsCity.orEmpty() }.takeIf { it.isNotBlank() }?.let { return it }
+        val city = withTimeoutOrNull(4_000) { resolveCity(loc.lat, loc.lon) }.orEmpty()
+        if (city.isNotBlank()) {
+            gpsCity = city
+            if (userLocation?.lat == loc.lat && userLocation?.lon == loc.lon) userLocation = loc.copy(city = city)
+        }
+        return city
     }
 
     fun refreshLocation() {
@@ -363,6 +389,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
 
+                val city = cityFor(loc)
                 val category = parsed.poiCategory
                 if (category != null) {
                     // Bei "Apotheke am Markt" um den Ankerort herum suchen statt um den Nutzer.
@@ -371,13 +398,13 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     val anchor = parsed.poiAnchorPlace
                     if (anchor != null) {
                         status = "Suche $anchor …"
-                        TransitApi.geocode(anchor, loc.lat, loc.lon, loc.city).firstOrNull()?.let {
+                        TransitApi.geocode(anchor, loc.lat, loc.lon, city).firstOrNull()?.let {
                             centerLat = it.lat
                             centerLon = it.lon
                         }
                     }
                     status = "Suche ${category.label} …"
-                    val pois = TransitApi.searchNearbyPois(centerLat, centerLon, category, loc.city, radiusMeters = 2500)
+                    val pois = TransitApi.searchNearbyPois(centerLat, centerLon, category, city, radiusMeters = 2500)
                     val pool = if (category.isTransitStopSearch) pois else pois.filter { !it.isStop }.ifEmpty { pois }
                     val sorted = pool.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
                     if (sorted.isEmpty()) {
@@ -389,7 +416,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     showPlace(loc, sorted.first())
                 } else {
                     status = "Suche „$destText“ …"
-                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, loc.city)
+                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city)
                     if (candidates.isEmpty()) {
                         status = "Ziel „$destText“ nicht gefunden."
                         return@launch

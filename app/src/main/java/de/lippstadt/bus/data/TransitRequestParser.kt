@@ -108,6 +108,10 @@ private val POI_RULES = listOf(
         PoiCategory("Restaurant", listOf("""["amenity"="restaurant"]"""), "Restaurant")
     ),
     PoiRule(rx("toilette|wc|klo"), PoiCategory("Toilette / WC", listOf("""["amenity"="toilets"]"""), "WC")),
+    PoiRule(
+        rx("friedhof|hauptfriedhof|grab|beerdigung"),
+        PoiCategory("Friedhof", listOf("""["landuse"="cemetery"]""", """["amenity"="grave_yard"]"""), "Friedhof")
+    ),
     PoiRule(rx("friseur|frisör|frisoer|haare\\s+schneiden"), PoiCategory("Friseur", listOf("""["shop"="hairdresser"]"""), "Friseur")),
     PoiRule(rx("krankenhaus|notaufnahme|klinikum"), PoiCategory("Krankenhaus", listOf("""["amenity"="hospital"]"""), "Krankenhaus")),
     PoiRule(rx("polizei|polizeiwache"), PoiCategory("Polizei", listOf("""["amenity"="police"]"""), "Polizei")),
