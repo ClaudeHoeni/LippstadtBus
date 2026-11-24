@@ -25,8 +25,8 @@ class TransitRequestParserTest {
 
     @Test
     fun parsesDestinationAndMode() {
-        val p = parse("Wann fährt ein Bus zum Bahnhof")
-        assertEquals("Bahnhof", p.destination)
+        val p = parse("Wann fährt ein Bus zum Rathaus")
+        assertEquals("Rathaus", p.destination)
         assertEquals("BUS", p.preferredMode)
         assertNull(p.poiCategory)
     }
@@ -74,47 +74,47 @@ class TransitRequestParserTest {
 
     @Test
     fun stopAsOriginDoesNotHijackDestination() {
-        val p = parse("Bus von der Haltestelle Lipperoder Straße zum Bahnhof")
+        val p = parse("Bus von der Haltestelle Lipperoder Straße zum Rathaus")
         assertNull(p.poiCategory)
-        assertEquals("Bahnhof", p.destination)
+        assertEquals("Rathaus", p.destination)
     }
 
     @Test
     fun relativeMinutes() {
-        val p = parse("In 30 Minuten zum Bahnhof")
+        val p = parse("In 30 Minuten zum Rathaus")
         assertEquals(now + 30 * 60_000L, p.targetTimeMillis)
-        assertEquals("Bahnhof", p.destination)
+        assertEquals("Rathaus", p.destination)
     }
 
     @Test
     fun tomorrowAtTime() {
-        val p = parse("Morgen um 7:30 zum Bahnhof")
+        val p = parse("Morgen um 7:30 zum Rathaus")
         val c = calOf(p.targetTimeMillis!!)
         assertEquals(24, c.get(Calendar.DAY_OF_MONTH))
         assertEquals(7, c.get(Calendar.HOUR_OF_DAY))
         assertEquals(30, c.get(Calendar.MINUTE))
-        assertEquals("Bahnhof", p.destination)
+        assertEquals("Rathaus", p.destination)
     }
 
     @Test
     fun dateAtEndOfSentence() {
-        val p = parse("Zum Bahnhof am 24.12.")
+        val p = parse("Zum Rathaus am 24.12.")
         val c = calOf(p.targetTimeMillis!!)
         assertEquals(24, c.get(Calendar.DAY_OF_MONTH))
         assertEquals(Calendar.DECEMBER, c.get(Calendar.MONTH))
-        assertEquals("Bahnhof", p.destination)
+        assertEquals("Rathaus", p.destination)
     }
 
     @Test
     fun todayAloneMeansNow() {
-        val p = parse("Heute zum Bahnhof")
+        val p = parse("Heute zum Rathaus")
         assertNull(p.targetTimeMillis)
-        assertEquals("Bahnhof", p.destination)
+        assertEquals("Rathaus", p.destination)
     }
 
     @Test
     fun pastTimeRollsToNextDay() {
-        val p = parse("Um 8 Uhr zum Bahnhof")
+        val p = parse("Um 8 Uhr zum Rathaus")
         val c = calOf(p.targetTimeMillis!!)
         assertEquals(24, c.get(Calendar.DAY_OF_MONTH))
         assertEquals(8, c.get(Calendar.HOUR_OF_DAY))
@@ -122,7 +122,7 @@ class TransitRequestParserTest {
 
     @Test
     fun eveningShiftsHour() {
-        val p = parse("Heute abend um 7 zum Bahnhof")
+        val p = parse("Heute abend um 7 zum Rathaus")
         val c = calOf(p.targetTimeMillis!!)
         assertEquals(23, c.get(Calendar.DAY_OF_MONTH))
         assertEquals(19, c.get(Calendar.HOUR_OF_DAY))
@@ -136,5 +136,24 @@ class TransitRequestParserTest {
         assertEquals(Calendar.FRIDAY, c.get(Calendar.DAY_OF_WEEK))
         assertEquals(8, c.get(Calendar.HOUR_OF_DAY))
         assertEquals("Paderborn", p.destination)
+    }
+
+    @Test
+    fun genericStationMeansNearestStation() {
+        for (q in listOf("Bahnhof", "Zum Bahnhof", "Wo ist der nächste Bahnhof", "Bahnhof in der Nähe")) {
+            assertEquals(q, "Nächster Bahnhof", parse(q).poiCategory?.label)
+        }
+    }
+
+    @Test
+    fun namedStationIsNormalSearch() {
+        val p = parse("Lippstadt Bahnhof")
+        assertNull(p.poiCategory)
+        assertEquals("Lippstadt Bahnhof", p.destination)
+    }
+
+    @Test
+    fun hairdresserIsPoi() {
+        assertEquals("Friseur", parse("friseur").poiCategory?.label)
     }
 }

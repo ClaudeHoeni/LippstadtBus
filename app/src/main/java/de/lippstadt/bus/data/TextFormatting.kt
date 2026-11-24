@@ -13,32 +13,13 @@ fun sanitizeTranscriptWords(text: String): String = text
     .replace(MULTI_SPACE, " ")
     .trim()
 
+/** Nur die Liniennummer (z. B. "M17", "S7", "RB10") – ohne "Bus"/"Tram"-Präfix, das oft falsch war. */
+@Suppress("UNUSED_PARAMETER")
 fun formatGermanLineName(rawMode: String, routeShortName: String, routeLongName: String): String {
     val shortClean = sanitizeTranscriptWords(routeShortName.trim())
-    val germanType = when (rawMode.uppercase(Locale.US)) {
-        "BUS", "COACH" -> "Bus"
-        "SUBURBAN" -> "S-Bahn"
-        "TRAM" -> "Tram"
-        "REGIONAL_RAIL", "REGIONAL_FAST_RAIL", "RAIL" -> "Zug"
-        "HIGHSPEED_RAIL", "LONG_DISTANCE", "NIGHT_RAIL" -> "Fernzug"
-        "FERRY" -> "Fähre"
-        else -> ""
-    }
-
-    if (shortClean.isBlank()) {
-        val cleanedLong = sanitizeTranscriptWords(routeLongName)
-        return cleanedLong.ifBlank { germanType.ifBlank { "Linie" } }
-    }
-
-    val upperShort = shortClean.uppercase(Locale.US)
-    return when {
-        germanType == "S-Bahn" && upperShort.startsWith("S") -> "S-Bahn $shortClean"
-        upperShort.startsWith("BUS ") -> shortClean
-        upperShort.startsWith("RE") || upperShort.startsWith("RB") ||
-            upperShort.startsWith("IC") || upperShort.startsWith("ICE") -> shortClean
-        germanType.isBlank() -> shortClean
-        else -> "$germanType $shortClean"
-    }
+        .replace(Regex("^(Bus|Tram|STR)\\s+", RegexOption.IGNORE_CASE), "")
+    if (shortClean.isNotBlank()) return shortClean
+    return sanitizeTranscriptWords(routeLongName).ifBlank { "Linie" }
 }
 
 fun formatTimeForSpeech(hhMm: String): String {

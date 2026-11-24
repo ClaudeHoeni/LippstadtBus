@@ -386,7 +386,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     places = sorted
                     isPoiResult = true
-                    showWalkTo(loc, sorted.first())
+                    showPlace(loc, sorted.first())
                 } else {
                     status = "Suche „$destText“ …"
                     val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, loc.city)
@@ -406,6 +406,11 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                 isLoading = false
             }
         }
+    }
+
+    /** Nahe Orte (≤ 1 km) als Fußweg, weiter entfernte mit ÖPNV-Verbindung. */
+    private suspend fun showPlace(loc: UserLocation, dest: GeoCandidate) {
+        if (distanceMeters(loc.lat, loc.lon, dest.lat, dest.lon) <= 1_000) showWalkTo(loc, dest) else loadRoute(loc, dest)
     }
 
     private fun showWalkTo(loc: UserLocation, dest: GeoCandidate) {
@@ -455,7 +460,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         searchJob = viewModelScope.launch {
             isLoading = true
             try {
-                if (isPoiResult) showWalkTo(loc, dest) else loadRoute(loc, dest)
+                if (isPoiResult) showPlace(loc, dest) else loadRoute(loc, dest)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

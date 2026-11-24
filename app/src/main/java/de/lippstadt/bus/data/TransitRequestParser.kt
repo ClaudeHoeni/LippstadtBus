@@ -41,6 +41,19 @@ val TRANSIT_STOP_CATEGORY = PoiCategory(
     isTransitStopSearch = true
 )
 
+val TRAIN_STATION_CATEGORY = PoiCategory(
+    label = "Nächster Bahnhof",
+    overpassQueries = listOf("""["railway"~"station|halt"]"""),
+    fallbackKeyword = "Bahnhof"
+)
+
+/** "Bahnhof" ohne Ortsnamen = nächster Bahnhof (sonst fand die Textsuche z. B. "Nauen, Bahnhof" 43 km entfernt). */
+private val GENERIC_STATION = Regex(
+    "^(?:(?:den|der|die|zum|zur)\\s+)?(?:nächste[nrs]?\\s+|naechste[nrs]?\\s+)?(bahnhof|bhf|s-bahnhof|u-bahnhof|bahnstation|s-bahn|u-bahn)" +
+        "(?:\\s+(?:in\\s+der\\s+nähe|in\\s+der\\s+naehe|hier|in\\s+meiner\\s+nähe))?$",
+    RegexOption.IGNORE_CASE
+)
+
 private class PoiRule(
     val regex: Regex,
     val category: PoiCategory,
@@ -95,6 +108,9 @@ private val POI_RULES = listOf(
         PoiCategory("Restaurant", listOf("""["amenity"="restaurant"]"""), "Restaurant")
     ),
     PoiRule(rx("toilette|wc|klo"), PoiCategory("Toilette / WC", listOf("""["amenity"="toilets"]"""), "WC")),
+    PoiRule(rx("friseur|frisör|frisoer|haare\\s+schneiden"), PoiCategory("Friseur", listOf("""["shop"="hairdresser"]"""), "Friseur")),
+    PoiRule(rx("krankenhaus|notaufnahme|klinikum"), PoiCategory("Krankenhaus", listOf("""["amenity"="hospital"]"""), "Krankenhaus")),
+    PoiRule(rx("polizei|polizeiwache"), PoiCategory("Polizei", listOf("""["amenity"="police"]"""), "Polizei")),
     PoiRule(rx("tankstelle|tanken"), PoiCategory("Tankstelle", listOf("""["amenity"="fuel"]"""), "Tankstelle")),
     PoiRule(
         rx("paketshop|post|dhl|packstation"),
@@ -318,6 +334,17 @@ fun parseNaturalTransitRequest(
     val (modeCode, modeLabel) = detectMode(text.lowercase(GERMAN))
 
     val destPhrase = extractDestinationPhrase(text)
+    if (GENERIC_STATION.matches(destPhrase.trim())) {
+        return ParsedVoiceQuery(
+            destination = "Nächster Bahnhof",
+            preferredMode = modeCode,
+            modeDisplayName = modeLabel,
+            poiCategory = TRAIN_STATION_CATEGORY,
+            poiAnchorPlace = null,
+            targetTimeMillis = time.millis,
+            timeDisplayLabel = time.label
+        )
+    }
     val poi = detectPoiCategory(destPhrase)
     if (poi != null) {
         val afterKeyword = destPhrase.substring(poi.keywordEnd).trim()

@@ -53,7 +53,7 @@ class MotisPlanParserTest {
         // Zweite Verbindung liegt in der Vergangenheit und wird verworfen
         assertEquals(1, list.size)
         val c = list.first()
-        assertEquals("Bus C1 → RB89", c.summaryLines)
+        assertEquals("C1 → RB89", c.summaryLines)
         assertEquals("09:12", c.firstDepartureTime)
         assertEquals("09:36", c.finalArrivalTime)
         assertEquals(2, c.firstDelayMinutes)
