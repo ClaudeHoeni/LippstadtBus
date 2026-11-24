@@ -60,6 +60,33 @@ object SystemActions {
         }
     }
 
+    /**
+     * Öffnet Google Maps. Mit [searchKeyword] (z. B. "Supermarkt") zeigt Google alle passenden Orte
+     * in der Nähe, sonst nur das Ziel.
+     */
+    fun openGoogleMaps(context: Context, lat: Double, lon: Double, label: String, searchKeyword: String?): Boolean {
+        val q = if (searchKeyword != null) Uri.encode(searchKeyword) else "$lat,$lon(${Uri.encode(sanitizeTranscriptWords(label))})"
+        val geo = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lon?q=$q"))
+            .setPackage("com.google.android.apps.maps")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            context.startActivity(geo)
+            true
+        } catch (_: ActivityNotFoundException) {
+            val web = if (searchKeyword != null) {
+                "https://www.google.com/maps/search/${Uri.encode(searchKeyword)}/@$lat,$lon,15z"
+            } else {
+                "https://www.google.com/maps/search/?api=1&query=$lat,$lon"
+            }
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(web)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                true
+            } catch (_: ActivityNotFoundException) {
+                false
+            }
+        }
+    }
+
     /** true, wenn die App APKs installieren darf; sonst wird die Einstellungsseite geöffnet. */
     fun ensureInstallPermission(context: Context): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true
