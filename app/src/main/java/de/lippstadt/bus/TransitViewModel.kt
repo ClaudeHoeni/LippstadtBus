@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Geocoder
 import android.os.Bundle
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -19,6 +20,9 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import de.lippstadt.bus.data.AppUpdateInfo
@@ -33,6 +37,7 @@ import de.lippstadt.bus.data.sanitizeTranscriptWords
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -48,6 +53,10 @@ data class UserLocation(val lat: Double, val lon: Double, val city: String)
  * wurden jedes Mal neu erzeugt.
  */
 class TransitViewModel(app: Application) : AndroidViewModel(app) {
+
+    private companion object {
+        const val GPS_IDLE_MS = 2 * 60_000L
+    }
 
     private val ctx get() = getApplication<Application>()
 
@@ -202,6 +211,60 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    // ------------------------------------------------------------ GPS an/aus
+
+    /** GPS liefert laufend Positionen (Kompass/Entfernung aktuell). Geht nach 2 Min. ohne Bedienung aus. */
+    var gpsActive by mutableStateOf(false)
+        private set
+
+    private var lastInteraction = System.currentTimeMillis()
+    private var autoOffJob: Job? = null
+
+    private val locationCallback = object : LocationCallback() {
+        override fun onLocationResult(result: LocationResult) {
+            val l = result.lastLocation ?: return
+            locatedAtMillis = System.currentTimeMillis()
+            userLocation = UserLocation(l.latitude, l.longitude, userLocation?.city.orEmpty())
+        }
+    }
+
+    /** Bei jeder Bedienung aufrufen – setzt den 2-Minuten-Timer zurück. */
+    fun touch() {
+        lastInteraction = System.currentTimeMillis()
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startGps() {
+        touch()
+        if (gpsActive || !hasLocationPermission()) return
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000)
+            .setMinUpdateIntervalMillis(2_000)
+            .build()
+        runCatching { fusedLocation.requestLocationUpdates(request, locationCallback, Looper.getMainLooper()) }
+            .onSuccess { gpsActive = true }
+        autoOffJob?.cancel()
+        autoOffJob = viewModelScope.launch {
+            while (true) {
+                delay(10_000)
+                if (System.currentTimeMillis() - lastInteraction >= GPS_IDLE_MS) {
+                    stopGps()
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopGps() {
+        autoOffJob?.cancel()
+        autoOffJob = null
+        runCatching { fusedLocation.removeLocationUpdates(locationCallback) }
+        gpsActive = false
+    }
+
+    fun toggleGps() {
+        if (gpsActive) stopGps() else refreshLocation()
+    }
+
     fun refreshLocation() {
         viewModelScope.launch { locate(maxAgeMs = 0) }
     }
@@ -216,6 +279,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     @SuppressLint("MissingPermission")
     private suspend fun locate(maxAgeMs: Long = 90_000): UserLocation? {
         if (!hasLocationPermission()) return null
+        startGps()
         val cached = userLocation
         if (cached != null && System.currentTimeMillis() - locatedAtMillis <= maxAgeMs) return cached
 
@@ -268,6 +332,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------ Suche
 
     fun search(rawOverride: String? = null) {
+        touch()
         val raw = sanitizeTranscriptWords(rawOverride ?: query)
         if (raw.isBlank()) {
             status = "Bitte ein Ziel oder eine Frage eingeben."
@@ -375,12 +440,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectConnection(index: Int) {
+        touch()
         if (index !in connections.indices) return
         stopSpeaking()
         selectedConnection = index
     }
 
     fun selectPlace(index: Int) {
+        touch()
         val dest = places.getOrNull(index) ?: return
         selectedPlace = index
         val loc = userLocation ?: return
@@ -432,6 +499,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        stopGps()
         recognizer?.destroy()
         tts.stop()
         tts.shutdown()

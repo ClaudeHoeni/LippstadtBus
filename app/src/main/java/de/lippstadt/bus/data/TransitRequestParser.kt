@@ -10,7 +10,9 @@ data class PoiCategory(
     val label: String,
     val overpassQueries: List<String>,
     val fallbackKeyword: String,
-    val isTransitStopSearch: Boolean = false
+    val isTransitStopSearch: Boolean = false,
+    /** Nur Treffer, deren Name dies enthält (Markensuche, z. B. "rewe"). */
+    val nameFilter: String? = null
 )
 
 data class ParsedVoiceQuery(
@@ -112,7 +114,8 @@ private fun detectPoiCategory(text: String): PoiHit? {
             rule.category.copy(
                 label = brand,
                 overpassQueries = rule.category.overpassQueries.map { "$it[\"name\"~\"$keyword\",i]" },
-                fallbackKeyword = brand
+                fallbackKeyword = brand,
+                nameFilter = keyword
             )
         } else {
             rule.category

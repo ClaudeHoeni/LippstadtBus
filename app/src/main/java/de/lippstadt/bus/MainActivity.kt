@@ -45,6 +45,17 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean(KEY_VOICE_HANDLED, true)
     }
 
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        viewModel.touch()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Im Hintergrund kein GPS – spart Akku
+        viewModel.stopGps()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)

@@ -60,6 +60,11 @@ object PoiParsers {
         }.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
     }
 
+    fun applyNameFilter(list: List<GeoCandidate>, category: PoiCategory): List<GeoCandidate> {
+        val f = category.nameFilter ?: return list
+        return list.filter { it.name.contains(f, ignoreCase = true) }
+    }
+
     private fun candidate(
         name: String, street: String, house: String,
         lat: Double, lon: Double, centerLat: Double, centerLon: Double, category: PoiCategory
