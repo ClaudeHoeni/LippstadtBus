@@ -214,6 +214,46 @@ object TransitApi {
         dedupe(sorted, minMeters = 300.0)
     }
 
+    /**
+     * Straßensuche im Umkreis (Standard 10 km), fehlertolerant: probiert auch zusammengeschriebene
+     * Varianten ("Gottes Garten" -> "Gottesgarten"). Gleiche Straße (mehrere Abschnitte) nur einmal.
+     */
+    suspend fun searchStreets(
+        query: String,
+        lat: Double,
+        lon: Double,
+        city: String,
+        radiusMeters: Int = 10_000
+    ): List<GeoCandidate> = withContext(Dispatchers.IO) {
+        val variants = StreetMatch.variants(sanitizeTranscriptWords(query))
+        val tasks: List<() -> List<GeoCandidate>> = variants.map { v ->
+            {
+                val url = "https://photon.komoot.io/api/?q=${enc(v)}&lat=$lat&lon=$lon" +
+                    "&location_bias_scale=0.0&zoom=14&limit=15&lang=de&osm_tag=highway"
+                PoiParsers.parsePhotonPlaces(httpGet(url, timeoutMs = 8_000))
+            }
+        } + listOfNotNull(
+            city.takeIf { it.isNotBlank() }?.let { c -> { transitousGeocode("${variants.first()}, $c", lat, lon) } }
+        )
+        val raw = coroutineScope {
+            tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
+        }
+        val matches = raw
+            .filter { c -> !c.isStop && variants.any { StreetMatch.similar(c.name, it) } }
+            .filter { distanceMeters(lat, lon, it.lat, it.lon) <= radiusMeters }
+            .sortedBy { distanceMeters(lat, lon, it.lat, it.lon) }
+        val out = mutableListOf<GeoCandidate>()
+        for (c in matches) {
+            val key = StreetMatch.normalize(c.name)
+            val sameStreet = out.any {
+                StreetMatch.normalize(it.name) == key && distanceMeters(it.lat, it.lon, c.lat, c.lon) < 3_000
+            }
+            if (!sameStreet) out += c.copy(isStreet = true)
+            if (out.size >= 8) break
+        }
+        out
+    }
+
     private fun transitousGeocode(q: String, biasLat: Double, biasLon: Double): List<GeoCandidate> {
         val arr = JSONArray(httpGet("$BASE/geocode?text=${enc(q)}&place=$biasLat,$biasLon"))
         return (0 until arr.length()).mapNotNull { i ->

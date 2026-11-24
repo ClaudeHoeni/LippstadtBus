@@ -41,4 +41,13 @@ class GeoRankingTest {
         val result = GeoRanking.rank(listOf(metz, lp), "Tivoli", 51.6735, 8.3446)
         assertEquals(listOf(lp), result)
     }
+
+    @Test
+    fun dropsFarGenericButKeepsCities() {
+        val lat = 51.6735; val lon = 8.3446 // Lippstadt
+        val farStop = GeoCandidate("Friedhof", "Kreis Unna, Werne", 51.66, 7.63, isStop = true)
+        assertEquals(emptyList<GeoCandidate>(), GeoRanking.rank(listOf(farStop), "Friedhof", lat, lon))
+        val erwitte = GeoCandidate("Erwitte", "59597 Kreis Soest, Erwitte", 51.61, 8.34)
+        assertEquals(listOf(erwitte), GeoRanking.rank(listOf(erwitte), "Erwitte", lat, lon))
+    }
 }
