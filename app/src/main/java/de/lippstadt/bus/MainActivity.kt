@@ -50,6 +50,12 @@ class MainActivity : ComponentActivity() {
         viewModel.touch()
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Fehlte seit dem Umbau – dadurch erschien nie ein Update-Hinweis.
+        viewModel.checkForUpdate()
+    }
+
     override fun onStop() {
         super.onStop()
         // Im Hintergrund kein GPS – spart Akku

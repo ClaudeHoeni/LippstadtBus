@@ -138,6 +138,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 canMap = place != null || conn != null,
                 onVoice = { startVoice() },
                 onSpeak = { vm.toggleSpeakActive() },
+                buildNumber = vm.buildNumber,
                 onMap = {
                     val last = conn?.legs?.lastOrNull()
                     openMap(place?.lat ?: last?.toLat, place?.lon ?: last?.toLon, place?.name ?: last?.toStop ?: "")
@@ -661,15 +662,16 @@ private fun BottomActionBar(
     canMap: Boolean,
     onVoice: () -> Unit,
     onSpeak: () -> Unit,
-    onMap: () -> Unit
+    onMap: () -> Unit,
+    buildNumber: Int
 ) {
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
             .background(AppColors.Card)
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             Pill(
@@ -692,5 +694,13 @@ private fun BottomActionBar(
                 modifier = Modifier.weight(1f)
             )
         }
+        Text(
+            text = "Version $buildNumber",
+            fontSize = 10.sp,
+            color = AppColors.TextMuted,
+            modifier = Modifier
+                .align(Alignment.End)
+                .padding(top = 4.dp)
+        )
     }
 }

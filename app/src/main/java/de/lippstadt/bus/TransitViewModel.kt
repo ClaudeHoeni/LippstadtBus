@@ -472,9 +472,20 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------ Update
 
+    private var lastUpdateCheck = 0L
+
+    /** Prüft höchstens alle 10 Min. auf ein neues Release (beim Start und beim Zurückkehren in die App). */
     fun checkForUpdate() {
-        viewModelScope.launch { availableUpdate = TransitApi.checkForUpdate(BuildConfig.VERSION_CODE) }
+        val now = System.currentTimeMillis()
+        if (now - lastUpdateCheck < 10 * 60_000L) return
+        lastUpdateCheck = now
+        viewModelScope.launch {
+            TransitApi.checkForUpdate(BuildConfig.VERSION_CODE)?.let { availableUpdate = it }
+        }
     }
+
+    /** Build-Nummer wie im Release-Namen „Aktuelle Version (N)“. */
+    val buildNumber: Int get() = BuildConfig.VERSION_CODE - 100
 
     fun installUpdate() {
         val upd = availableUpdate ?: return
