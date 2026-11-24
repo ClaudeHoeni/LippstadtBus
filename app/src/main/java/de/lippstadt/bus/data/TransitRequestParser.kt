@@ -22,7 +22,9 @@ data class ParsedVoiceQuery(
     val poiCategory: PoiCategory?,
     val poiAnchorPlace: String?,
     val targetTimeMillis: Long? = null,
-    val timeDisplayLabel: String? = null
+    val timeDisplayLabel: String? = null,
+    /** Ziel sieht aus wie ein Straßenname -> Straßensuche im Umkreis mit Auswahl. */
+    val isStreet: Boolean = false
 )
 
 private val GERMAN = Locale.GERMANY
@@ -375,6 +377,7 @@ fun parseNaturalTransitRequest(
         poiCategory = null,
         poiAnchorPlace = null,
         targetTimeMillis = time.millis,
-        timeDisplayLabel = time.label
+        timeDisplayLabel = time.label,
+        isStreet = StreetMatch.looksLikeStreet(destPhrase)
     )
 }

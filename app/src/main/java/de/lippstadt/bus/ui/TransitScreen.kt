@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -126,6 +127,10 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
 
     fun openMap(lat: Double?, lon: Double?, label: String) {
         if (!SystemActions.openInMaps(context, lat, lon, label)) vm.postStatus("Keine Karten-App gefunden.")
+    }
+
+    if (vm.streetChoices.isNotEmpty()) {
+        StreetChoiceDialog(vm)
     }
 
     Scaffold(
@@ -278,6 +283,32 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
             VSpace(8.dp)
         }
     }
+}
+
+@Composable
+private fun StreetChoiceDialog(vm: TransitViewModel) {
+    val loc = vm.userLocation
+    AlertDialog(
+        onDismissRequest = { vm.dismissStreetChoices() },
+        containerColor = AppColors.Card,
+        title = { Text("Welche Straße?", color = AppColors.Text, style = MaterialTheme.typography.titleLarge) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                vm.streetChoices.forEachIndexed { idx, c ->
+                    val dist = loc?.let { formatDistance(distanceMeters(it.lat, it.lon, c.lat, c.lon).toInt()) }
+                    SelectableRow(
+                        selected = false,
+                        title = c.name,
+                        subtitle = c.areaLabel,
+                        trailing = dist,
+                        onClick = { vm.chooseStreet(idx) }
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { Pill("Abbrechen", onClick = { vm.dismissStreetChoices() }) }
+    )
 }
 
 @Composable

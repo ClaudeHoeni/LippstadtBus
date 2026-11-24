@@ -5,9 +5,8 @@ import java.util.Locale
 /** Sortiert Geocoding-Treffer nach Textübereinstimmung UND Nähe (ohne Netzwerk, testbar). */
 object GeoRanking {
 
-    /** Weitere Treffer nur bis zu dieser Entfernung (oder 1,5 × Entfernung des besten Treffers). */
-    private const val LOCAL_RADIUS_M = 25_000.0
     private const val REGION_RADIUS_M = 30_000.0
+    private const val MAX_LOCAL_M = 5_000.0
 
     fun rank(
         raw: List<GeoCandidate>,
@@ -40,7 +39,15 @@ object GeoRanking {
         val sorted = raw.sortedWith(compareByDescending<GeoCandidate> { score(it) }.thenBy { dist(it) })
         // Gibt es einen passenden Treffer in der Region, fliegen alle weit entfernten raus
         // (vorher: "Tivoli" in Lippstadt -> Metz 323 km). Nur ohne lokalen Treffer gelten Fernziele.
-        val local = sorted.filter { c ->
+        // Nur Treffer bis 5 km – außer Städte/Orte bzw. Ziele in einer genannten Stadt
+        // ("Erwitte", "Paderborn Hbf", "Hamburg"): deren Ortsname steht in der Eingabe.
+        fun cityMatch(c: GeoCandidate): Boolean {
+            val area = tokens(c.areaLabel)
+            return queryTokens.any { it in area }
+        }
+        val candidates = sorted.filter { dist(it) <= MAX_LOCAL_M || cityMatch(it) }
+
+        val local = candidates.filter { c ->
             dist(c) <= REGION_RADIUS_M && (tokens(c.name) + tokens(c.areaLabel)).containsAll(queryTokens)
         }
         if (local.isNotEmpty()) {
@@ -55,8 +62,7 @@ object GeoRanking {
             }
             return local.sortedByDescending { localScore(it) }
         }
-        val limit = maxOf(LOCAL_RADIUS_M, dist(sorted.first()) * 1.5)
-        return sorted.filter { dist(it) <= limit }
+        return candidates
     }
 
     private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")

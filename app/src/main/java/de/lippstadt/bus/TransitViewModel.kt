@@ -88,6 +88,10 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     var timeLabel by mutableStateOf<String?>(null)
         private set
 
+    /** Mehrere passende Straßen -> Auswahl-Popup. */
+    var streetChoices by mutableStateOf<List<GeoCandidate>>(emptyList())
+        private set
+
     var availableUpdate by mutableStateOf<AppUpdateInfo?>(null)
         private set
     var isUpdating by mutableStateOf(false)
@@ -375,6 +379,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             isLoading = true
             connections = emptyList()
             places = emptyList()
+            streetChoices = emptyList()
             selectedPlace = 0
             selectedConnection = 0
             activeMode = parsed.preferredMode
@@ -415,6 +420,21 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     isPoiResult = true
                     showPlace(loc, sorted.first())
                 } else {
+                    if (parsed.isStreet) {
+                        status = "Suche Straße „$destText“ …"
+                        val streets = TransitApi.searchStreets(destText, loc.lat, loc.lon, city)
+                        if (streets.isNotEmpty()) {
+                            places = streets
+                            isPoiResult = false
+                            if (streets.size == 1) {
+                                loadRoute(loc, streets.first())
+                            } else {
+                                streetChoices = streets
+                                status = "${streets.size} passende Straßen – bitte wählen."
+                            }
+                            return@launch
+                        }
+                    }
                     status = "Suche „$destText“ …"
                     val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city)
                     if (candidates.isEmpty()) {
@@ -469,6 +489,15 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                 "Ab ${results.first().firstTransitLeg!!.fromStop} → ${dest.fullDisplay}$timeHint"
             else -> "Ziel: ${dest.fullDisplay}$timeHint"
         }
+    }
+
+    fun chooseStreet(index: Int) {
+        streetChoices = emptyList()
+        selectPlace(index)
+    }
+
+    fun dismissStreetChoices() {
+        streetChoices = emptyList()
     }
 
     fun selectConnection(index: Int) {
