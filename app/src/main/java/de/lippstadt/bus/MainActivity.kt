@@ -52,8 +52,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Fehlte seit dem Umbau – dadurch erschien nie ein Update-Hinweis.
-        viewModel.checkForUpdate()
+        // Update prüfen und GPS direkt einschalten
+        viewModel.onAppVisible()
     }
 
     override fun onStop() {

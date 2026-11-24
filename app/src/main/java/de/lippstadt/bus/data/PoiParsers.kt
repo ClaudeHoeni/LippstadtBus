@@ -60,6 +60,36 @@ object PoiParsers {
         }.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
     }
 
+    private val STOP_VALUES = setOf("bus_stop", "station", "halt", "tram_stop", "stop_position", "platform")
+
+    /** Photon-Treffer der normalen Zielsuche (Name + PLZ/Ort). */
+    fun parsePhotonPlaces(json: String): List<GeoCandidate> {
+        val features = JSONObject(json).optJSONArray("features") ?: return emptyList()
+        return (0 until features.length()).mapNotNull { i ->
+            val f = features.optJSONObject(i) ?: return@mapNotNull null
+            val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates") ?: return@mapNotNull null
+            val p = f.optJSONObject("properties") ?: return@mapNotNull null
+            val lon = coords.optDouble(0)
+            val lat = coords.optDouble(1)
+            val name = sanitizeTranscriptWords(p.optString("name", "").trim())
+            if (lat.isNaN() || lon.isNaN() || name.isBlank()) return@mapNotNull null
+            val city = p.optString("city", "").ifBlank { p.optString("county", "") }.trim()
+            val zip = p.optString("postcode", "").trim()
+            val street = listOf(p.optString("street", ""), p.optString("housenumber", ""))
+                .filter { it.isNotBlank() }.joinToString(" ")
+            val area = listOf(street, "$zip $city".trim()).filter { it.isNotBlank() }.joinToString(", ")
+            val value = p.optString("osm_value", "")
+            GeoCandidate(
+                name = name,
+                areaLabel = area,
+                lat = lat,
+                lon = lon,
+                isStop = value in STOP_VALUES,
+                isStreet = p.optString("osm_key", "") == "highway" && value !in STOP_VALUES
+            )
+        }
+    }
+
     fun applyNameFilter(list: List<GeoCandidate>, category: PoiCategory): List<GeoCandidate> {
         val f = category.nameFilter ?: return list
         return list.filter { it.name.contains(f, ignoreCase = true) }
