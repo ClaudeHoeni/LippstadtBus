@@ -155,9 +155,9 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
         ) {
             Header(
                 city = vm.gpsCity,
-                hasLocation = vm.userLocation != null,
+                gpsActive = vm.gpsActive,
                 isLocating = vm.isLocating,
-                onRefresh = { vm.refreshLocation() }
+                onToggleGps = { vm.toggleGps() }
             )
 
             vm.availableUpdate?.let { upd ->
@@ -280,7 +280,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
 }
 
 @Composable
-private fun Header(city: String?, hasLocation: Boolean, isLocating: Boolean, onRefresh: () -> Unit) {
+private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, onToggleGps: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -295,15 +295,14 @@ private fun Header(city: String?, hasLocation: Boolean, isLocating: Boolean, onR
         }
         val (dotColor, label) = when {
             isLocating -> AppColors.Orange to "GPS sucht …"
-            !city.isNullOrBlank() -> AppColors.Success to city
-            hasLocation -> AppColors.Success to "Standort bereit"
-            else -> AppColors.TextMuted to "GPS inaktiv"
+            gpsActive -> AppColors.Success to (city?.takeIf { it.isNotBlank() } ?: "GPS an")
+            else -> AppColors.TextMuted to "GPS aus"
         }
         Row(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
                 .background(AppColors.Card)
-                .clickable(onClick = onRefresh)
+                .clickable(onClickLabel = "GPS ein- oder ausschalten", onClick = onToggleGps)
                 .padding(horizontal = 12.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

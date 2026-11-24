@@ -3,7 +3,6 @@ package de.lippstadt.bus.data
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -112,16 +111,11 @@ object TransitApi {
             }
         }
 
-        if (found.isEmpty()) {
-            // Overpass (alle Server parallel) und Photon gleichzeitig starten –
-            // vorher liefen bis zu 6 Anfragen à 20 s nacheinander.
-            val photon = ioScope.async { photonSearch(centerLat, centerLon, category) }
-            val overpass = overpassSearch(centerLat, centerLon, category, radiusMeters)
-            found += overpass.ifEmpty {
-                withTimeoutOrNull(4_000) { photon.await() } ?: emptyList()
-            }
-            if (overpass.isNotEmpty()) photon.cancel()
-        }
+        // Hauptquelle: Photon-Umkreissuche (OSM-Daten, nach Entfernung sortiert, < 1 s).
+        if (found.isEmpty()) found += photonNearby(centerLat, centerLon, category, radiusMeters)
+
+        // Reserve: Overpass (alle Server parallel, max. 10 s).
+        if (found.isEmpty()) found += overpassSearch(centerLat, centerLon, category, radiusMeters)
 
         if (found.isEmpty()) {
             // Letzter Ausweg: Volltextsuche, nur Treffer im Umkreis.
@@ -166,23 +160,29 @@ object TransitApi {
         val body = "data=${enc(query)}"
         val tasks = OVERPASS_ENDPOINTS.map { ep ->
             {
-                PoiParsers.parseOverpass(httpPost(ep, body, timeoutMs = 9_000), lat, lon, category)
-                    .takeIf { it.isNotEmpty() }
+                PoiParsers.applyNameFilter(
+                    PoiParsers.parseOverpass(httpPost(ep, body, timeoutMs = 9_000), lat, lon, category), category
+                ).takeIf { it.isNotEmpty() }
             }
         }
         return firstResult(10_000, tasks) ?: emptyList()
     }
 
-    /** Ausweich-Suche über Photon (komoot), gefiltert nach OSM-Tag und nach Nähe gewichtet. */
-    private fun photonSearch(lat: Double, lon: Double, category: PoiCategory): List<GeoCandidate> {
+    /**
+     * Umkreissuche über Photon /reverse mit OSM-Tag-Filter. Die frühere Textsuche (/api?q=Supermarkt)
+     * gewichtete den Standort kaum und lieferte z. B. Treffer auf Sardinien – daher kam nichts Brauchbares an.
+     */
+    private fun photonNearby(lat: Double, lon: Double, category: PoiCategory, radiusMeters: Int): List<GeoCandidate> {
         val tags = PoiParsers.photonTags(category)
         if (tags.isEmpty()) return emptyList()
         val tagParams = tags.joinToString("") { "&osm_tag=${enc(it)}" }
-        val url = "https://photon.komoot.io/api/?q=${enc(category.fallbackKeyword)}" +
-            "&lat=$lat&lon=$lon&location_bias_scale=0.1&zoom=16&limit=15&lang=de$tagParams"
-        return runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 8_000), lat, lon, category) }
+        val limit = if (category.nameFilter != null) 50 else 20
+        val radiusKm = String.format(Locale.US, "%.1f", radiusMeters / 1000.0)
+        val url = "https://photon.komoot.io/reverse?lat=$lat&lon=$lon&radius=$radiusKm&limit=$limit&lang=de$tagParams"
+        val list = runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 8_000), lat, lon, category) }
             .getOrDefault(emptyList())
-            .filter { distanceMeters(lat, lon, it.lat, it.lon) <= 5_000 }
+        return PoiParsers.applyNameFilter(list, category)
+            .filter { distanceMeters(lat, lon, it.lat, it.lon) <= radiusMeters }
     }
 
     suspend fun geocode(
