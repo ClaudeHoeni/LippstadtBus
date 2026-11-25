@@ -91,8 +91,16 @@ object PoiParsers {
     }
 
     fun applyNameFilter(list: List<GeoCandidate>, category: PoiCategory): List<GeoCandidate> {
-        val f = category.nameFilter ?: return list
-        return list.filter { it.name.contains(f, ignoreCase = true) }
+        val f = category.nameFilter
+        if (f != null) return list.filter { it.name.contains(f, ignoreCase = true) }
+        return list
+    }
+
+    /** Für die Küchen-Suche: nur Treffer, deren Name typisch ist (z. B. "Pizzeria", "Asia Wok"). */
+    fun applyNameRegex(list: List<GeoCandidate>, category: PoiCategory): List<GeoCandidate> {
+        val r = category.nameRegex ?: return list
+        val regex = Regex(r, RegexOption.IGNORE_CASE)
+        return list.filter { regex.containsMatchIn(it.name) }
     }
 
     private fun candidate(

@@ -117,7 +117,15 @@ object TransitApi {
 
         // Photon-Umkreissuche (OSM-Daten, nach Entfernung sortiert, < 1 s). Bei Haltestellen IMMER
         // zusätzlich – Transitous allein lieferte oft nur Haltestellen in einer Richtung.
-        if (found.isEmpty() || category.isTransitStopSearch) {
+        if (category.nameRegex != null) {
+            // Küchen-Suche: Overpass (kennt "cuisine") und Photon (Namensmuster) gleichzeitig, Ergebnisse vereinen
+            val viaOverpass = ioScope.async { overpassSearch(centerLat, centerLon, category, radiusMeters) }
+            val viaPhoton = PoiParsers.applyNameRegex(
+                photonNearby(centerLat, centerLon, category.copy(nameRegex = null), radiusMeters, 25), category
+            )
+            found += viaPhoton
+            found += withTimeoutOrNull(if (viaPhoton.isEmpty()) 10_000 else 5_000) { viaOverpass.await() }.orEmpty()
+        } else if (found.isEmpty() || category.isTransitStopSearch) {
             found += photonNearby(centerLat, centerLon, category, radiusMeters, maxResults)
         }
 
