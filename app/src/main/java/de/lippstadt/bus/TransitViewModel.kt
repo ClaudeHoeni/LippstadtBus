@@ -384,6 +384,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             connections = emptyList()
             places = emptyList()
             streetChoices = emptyList()
+            activeCategory = null
             selectedPlace = 0
             selectedConnection = 0
             activeMode = parsed.preferredMode
@@ -401,6 +402,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                 val city = cityFor(loc)
                 val category = parsed.poiCategory
                 poiKeyword = category?.fallbackKeyword
+                activeCategory = category
                 if (category != null) {
                     // Bei "Apotheke am Markt" um den Ankerort herum suchen statt um den Nutzer.
                     var centerLat = loc.lat
@@ -493,6 +495,49 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             results.first().firstTransitLeg != null ->
                 "Ab ${results.first().firstTransitLeg!!.fromStop} → ${dest.fullDisplay}$timeHint"
             else -> "Ziel: ${dest.fullDisplay}$timeHint"
+        }
+    }
+
+    private var activeCategory: de.lippstadt.bus.data.PoiCategory? = null
+    private var moreJob: Job? = null
+
+    /**
+     * Karte verschoben/herausgezoomt: weitere Treffer der aktuellen Kategorie im sichtbaren Bereich
+     * nachladen und an die Liste anhängen (max. 40).
+     */
+    fun loadMoreAround(lat: Double, lon: Double, radiusMeters: Int) {
+        val category = activeCategory ?: return
+        if (places.size >= 40) return
+        moreJob?.cancel()
+        moreJob = viewModelScope.launch {
+            val more = runCatching {
+                TransitApi.searchNearbyPois(
+                    lat, lon, category, userLocation?.city.orEmpty(),
+                    radiusMeters = radiusMeters.coerceIn(500, 8_000),
+                    maxResults = 25
+                )
+            }.getOrDefault(emptyList())
+            val merged = places.toMutableList()
+            for (c in more) {
+                val dup = merged.any { distanceMeters(it.lat, it.lon, c.lat, c.lon) < 30 }
+                if (!dup && merged.size < 40) merged += c
+            }
+            if (merged.size != places.size) places = merged
+        }
+    }
+
+    /** Fußweg zum auf der Karte gewählten Ziel. */
+    var walkRoute by mutableStateOf<de.lippstadt.bus.data.WalkRoute?>(null)
+        private set
+    private var walkJob: Job? = null
+
+    fun loadWalkRoute(index: Int) {
+        val dest = places.getOrNull(index) ?: return
+        val loc = userLocation ?: return
+        walkJob?.cancel()
+        walkRoute = null
+        walkJob = viewModelScope.launch {
+            walkRoute = TransitApi.fetchWalkRoute(loc.lat, loc.lon, dest.lat, dest.lon)
         }
     }
 

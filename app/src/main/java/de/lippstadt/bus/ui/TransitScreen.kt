@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -157,7 +158,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Pill(
                         "OpenStreetMap – alle Ziele markiert",
-                        onClick = { showMapChoice = false; showOsmMap = true },
+                        onClick = { showMapChoice = false; showOsmMap = true; vm.loadWalkRoute(vm.selectedPlace) },
                         filled = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -190,7 +191,9 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
             selectedIndex = vm.selectedPlace,
             userLat = vm.userLocation?.lat,
             userLon = vm.userLocation?.lon,
-            onSelect = { vm.selectPlace(it) },
+            walkRoute = vm.walkRoute,
+            onSelect = { vm.selectPlace(it); vm.loadWalkRoute(it) },
+            onViewportChanged = { lat, lon, r -> vm.loadMoreAround(lat, lon, r) },
             onGoogleMaps = { openGoogle() },
             onClose = { showOsmMap = false }
         )
@@ -425,6 +428,18 @@ private fun SearchCard(vm: TransitViewModel, onVoice: () -> Unit) {
             // Früher wurde hier bei jedem Tastendruck getrimmt – Leerzeichen ließen sich nicht tippen.
             onValueChange = { vm.query = it },
             placeholder = { Text("Ziel, Haltestelle, Bäckerei …", color = AppColors.TextMuted) },
+            trailingIcon = {
+                if (vm.query.isNotEmpty()) {
+                    Text(
+                        "✕",
+                        color = AppColors.TextMuted,
+                        fontSize = 18.sp,
+                        modifier = Modifier
+                            .clickable(onClickLabel = "Eingabe löschen") { vm.query = "" }
+                            .padding(10.dp)
+                    )
+                }
+            },
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
@@ -441,7 +456,10 @@ private fun SearchCard(vm: TransitViewModel, onVoice: () -> Unit) {
                 unfocusedBorderColor = AppColors.Outline,
                 cursorColor = AppColors.Orange
             ),
-            modifier = Modifier.fillMaxWidth()
+            // Neues Antippen des Feldes löscht die alte Eingabe (vorher musste man Zeichen einzeln löschen)
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { if (it.isFocused) vm.query = "" }
         )
         VSpace(10.dp)
         if (vm.isLoading) {
