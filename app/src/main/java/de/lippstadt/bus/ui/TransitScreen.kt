@@ -161,11 +161,21 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                         filled = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Text(
+                        "Zeigt die Treffer dieser App (bis zu 6 im Umkreis) und deinen Standort. Marker antippen wählt das Ziel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextMuted
+                    )
                     Pill(
                         "Google Maps",
                         onClick = { showMapChoice = false; openGoogle() },
                         color = AppColors.Pink,
                         modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Bei Kategorien (z. B. Supermarkt) zeigt Google alle Orte, die Google kennt – oft mehr. Sonst nur das Ziel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextMuted
                     )
                 }
             },
