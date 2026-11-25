@@ -47,4 +47,11 @@ class CuisineTest {
     fun kinderIsNotInder() {
         assertTrue(label("Kinderarzt") != "Indisches Restaurant")
     }
+
+    @Test
+    fun artWordsMapToGalleries() {
+        for (q in listOf("Kunst", "Galerie", "Ausstellung in der Nähe", "zur Kunsthalle")) {
+            assertEquals(q, "Galerie / Ausstellung", label(q))
+        }
+    }
 }

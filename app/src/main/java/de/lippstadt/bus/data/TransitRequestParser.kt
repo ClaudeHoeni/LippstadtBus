@@ -108,6 +108,14 @@ private val POI_RULES = listOf(
         PoiCategory("Geldautomat / Bank", listOf("""["amenity"="atm"]""", """["amenity"="bank"]"""), "Bank"),
         brands = setOf("sparkasse", "volksbank")
     ),
+    PoiRule(
+        rx("kunst|galerie|galerien|gallery|ausstellung|ausstellungen|kunsthalle|kunstmuseum|vernissage|atelier"),
+        PoiCategory(
+            "Galerie / Ausstellung",
+            listOf("""["tourism"="gallery"]""", """["shop"="art"]""", """["amenity"="arts_centre"]""", """["tourism"="museum"]"""),
+            "Galerie"
+        )
+    ),
     PoiRule(rx("café|cafe|kaffee"), PoiCategory("Café", listOf("""["amenity"="cafe"]"""), "Café")),
     // Bewusst NICHT "essen" allein – sonst wird "nach Essen" (Stadt) zur Restaurantsuche.
     PoiRule(
