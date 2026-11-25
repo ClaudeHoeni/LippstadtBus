@@ -11,7 +11,10 @@ import android.view.Surface
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -254,6 +257,8 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
 
             SearchCard(vm = vm, onVoice = { startVoice() })
 
+            FavoritesCard(vm)
+
             val loc = vm.userLocation
             if (place != null && loc != null) {
                 val stopLeg = conn?.firstTransitLeg
@@ -349,6 +354,59 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
 
             VSpace(8.dp)
         }
+    }
+}
+
+/** 4 Favoriten: leer antippen = aktuelles Ziel speichern; belegt antippen = hinfahren; lange drücken = überschreiben/löschen. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FavoritesCard(vm: TransitViewModel) {
+    DarkCard(contentPadding = PaddingValues(14.dp)) {
+        SectionLabel("Favoriten", AppColors.Violet)
+        VSpace(10.dp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            vm.favorites.forEachIndexed { slot, fav ->
+                val shape = RoundedCornerShape(14.dp)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp)
+                        .clip(shape)
+                        .then(
+                            if (fav != null) Modifier.background(AppColors.CardRaised)
+                            else Modifier.border(1.dp, AppColors.Outline, shape)
+                        )
+                        .combinedClickable(
+                            onClick = { if (fav != null) vm.goToFavorite(slot) else vm.saveFavorite(slot) },
+                            onLongClick = { if (vm.activePlace != null) vm.saveFavorite(slot) else vm.deleteFavorite(slot) }
+                        )
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (fav != null) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("★", color = AppColors.Orange, fontSize = 12.sp)
+                            Text(
+                                fav.name,
+                                color = AppColors.Text,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    } else {
+                        Text("+ ${slot + 1}", color = AppColors.TextMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        VSpace(6.dp)
+        Text(
+            "Leer antippen: aktuelles Ziel speichern · Lange drücken: überschreiben bzw. löschen",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppColors.TextMuted
+        )
     }
 }
 
