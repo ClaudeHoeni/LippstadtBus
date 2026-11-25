@@ -90,7 +90,8 @@ object TransitApi {
         centerLon: Double,
         category: PoiCategory,
         cityContext: String,
-        radiusMeters: Int = 2000
+        radiusMeters: Int = 2000,
+        maxResults: Int = 10
     ): List<GeoCandidate> = withContext(Dispatchers.IO) {
         val found = mutableListOf<GeoCandidate>()
 
@@ -116,8 +117,16 @@ object TransitApi {
 
         // Photon-Umkreissuche (OSM-Daten, nach Entfernung sortiert, < 1 s). Bei Haltestellen IMMER
         // zusätzlich – Transitous allein lieferte oft nur Haltestellen in einer Richtung.
-        if (found.isEmpty() || category.isTransitStopSearch) {
-            found += photonNearby(centerLat, centerLon, category, radiusMeters)
+        if (category.nameRegex != null) {
+            // Küchen-Suche: Overpass (kennt "cuisine") und Photon (Namensmuster) gleichzeitig, Ergebnisse vereinen
+            val viaOverpass = ioScope.async { overpassSearch(centerLat, centerLon, category, radiusMeters) }
+            val viaPhoton = PoiParsers.applyNameRegex(
+                photonNearby(centerLat, centerLon, category.copy(nameRegex = null), radiusMeters, 25), category
+            )
+            found += viaPhoton
+            found += withTimeoutOrNull(if (viaPhoton.isEmpty()) 10_000 else 5_000) { viaOverpass.await() }.orEmpty()
+        } else if (found.isEmpty() || category.isTransitStopSearch) {
+            found += photonNearby(centerLat, centerLon, category, radiusMeters, maxResults)
         }
 
         // Reserve: Overpass (alle Server parallel, max. 10 s).
@@ -136,7 +145,7 @@ object TransitApi {
         dedupe(
             found.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) },
             minMeters = if (category.isTransitStopSearch) 300.0 else 60.0,
-            max = 10
+            max = maxResults
         )
     }
 
@@ -184,11 +193,17 @@ object TransitApi {
      * Umkreissuche über Photon /reverse mit OSM-Tag-Filter. Die frühere Textsuche (/api?q=Supermarkt)
      * gewichtete den Standort kaum und lieferte z. B. Treffer auf Sardinien – daher kam nichts Brauchbares an.
      */
-    private fun photonNearby(lat: Double, lon: Double, category: PoiCategory, radiusMeters: Int): List<GeoCandidate> {
+    private fun photonNearby(
+        lat: Double,
+        lon: Double,
+        category: PoiCategory,
+        radiusMeters: Int,
+        maxResults: Int = 10
+    ): List<GeoCandidate> {
         val tags = PoiParsers.photonTags(category)
         if (tags.isEmpty()) return emptyList()
         val tagParams = tags.joinToString("") { "&osm_tag=${enc(it)}" }
-        val limit = if (category.nameFilter != null) 50 else 20
+        val limit = if (category.nameFilter != null) 50 else maxOf(20, maxResults * 2).coerceAtMost(50)
         val radiusKm = String.format(Locale.US, "%.1f", radiusMeters / 1000.0)
         val url = "https://photon.komoot.io/reverse?lat=$lat&lon=$lon&radius=$radiusKm&limit=$limit&lang=de$tagParams"
         val list = runCatching { PoiParsers.parsePhoton(httpGet(url, timeoutMs = 8_000), lat, lon, category) }
@@ -355,6 +370,29 @@ object TransitApi {
         val list = MotisPlanParser.parse(httpGet(url, timeoutMs = 15_000), destName, destLat, destLon, ref)
         list.ifEmpty { listOf(MotisPlanParser.directWalk(startLat, startLon, destName, destLat, destLon, ref)) }
     }
+
+    /** Beste Fußroute (Geometrie, Länge, Dauer) über den Routenplaner. */
+    suspend fun fetchWalkRoute(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): WalkRoute? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = "$BASE/plan?fromPlace=$fromLat,$fromLon&toPlace=$toLat,$toLon" +
+                    "&directModes=WALK&transitModes=WALK&maxDirectTime=7200"
+                val direct = JSONObject(httpGet(url, timeoutMs = 12_000)).optJSONArray("direct")
+                    ?: return@runCatching null
+                val it = direct.optJSONObject(0) ?: return@runCatching null
+                val legs = it.optJSONArray("legs") ?: return@runCatching null
+                val points = mutableListOf<Pair<Double, Double>>()
+                var dist = 0.0
+                for (i in 0 until legs.length()) {
+                    val leg = legs.optJSONObject(i) ?: continue
+                    dist += leg.optDouble("distance", 0.0).let { d -> if (d.isNaN()) 0.0 else d }
+                    val g = leg.optJSONObject("legGeometry") ?: continue
+                    points += PolylineCodec.decode(g.optString("points", ""), g.optInt("precision", 7))
+                }
+                if (points.size < 2) null
+                else WalkRoute(points, dist.toInt(), maxOf(1, it.optInt("duration", 0) / 60))
+            }.getOrNull()
+        }
 
     // ------------------------------------------------------------ App-Update
 

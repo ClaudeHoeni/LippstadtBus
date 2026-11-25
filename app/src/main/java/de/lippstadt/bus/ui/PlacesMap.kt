@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +31,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import de.lippstadt.bus.data.GeoCandidate
+import de.lippstadt.bus.data.WalkRoute
+import de.lippstadt.bus.data.formatDistance
+import org.osmdroid.views.overlay.Polyline
+import de.lippstadt.bus.data.distanceMeters
+import org.osmdroid.events.DelayedMapListener
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.BoundingBox
@@ -56,7 +65,9 @@ fun PlacesMapDialog(
     selectedIndex: Int,
     userLat: Double?,
     userLon: Double?,
+    walkRoute: WalkRoute?,
     onSelect: (Int) -> Unit,
+    onViewportChanged: (lat: Double, lon: Double, radiusMeters: Int) -> Unit,
     onGoogleMaps: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -73,6 +84,25 @@ fun PlacesMapDialog(
             setMultiTouchControls(true)
             zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
         }
+    }
+    val zoomedOnce = remember { booleanArrayOf(false) }
+    val viewportCallback = rememberUpdatedState(onViewportChanged)
+    DisposableEffect(Unit) {
+        // Beim Verschieben/Herauszoomen weitere Treffer im sichtbaren Bereich nachladen
+        val listener = DelayedMapListener(object : MapListener {
+            override fun onScroll(event: ScrollEvent?): Boolean = report()
+            override fun onZoom(event: ZoomEvent?): Boolean = report()
+            private fun report(): Boolean {
+                if (!zoomedOnce[0]) return false
+                val box = mapView.boundingBox
+                val center = mapView.mapCenter
+                val radius = distanceMeters(center.latitude, center.longitude, box.latNorth, box.lonEast).toInt()
+                viewportCallback.value(center.latitude, center.longitude, radius)
+                return false
+            }
+        }, 700)
+        mapView.addMapListener(listener)
+        onDispose { mapView.removeMapListener(listener) }
     }
     DisposableEffect(Unit) {
         mapView.onResume()
@@ -92,6 +122,15 @@ fun PlacesMapDialog(
                 modifier = Modifier.fillMaxSize(),
                 update = { map ->
                     map.overlays.clear()
+                    // Fußweg zum gewählten Ziel
+                    walkRoute?.let { r ->
+                        map.overlays.add(Polyline(map).apply {
+                            setPoints(r.points.map { (la, lo) -> GeoPoint(la, lo) })
+                            outlinePaint.color = AppColors.Orange.toArgb()
+                            outlinePaint.strokeWidth = 7 * density
+                            outlinePaint.strokeCap = android.graphics.Paint.Cap.ROUND
+                        })
+                    }
                     val points = mutableListOf<GeoPoint>()
                     places.forEachIndexed { idx, p ->
                         val gp = GeoPoint(p.lat, p.lon)
@@ -124,7 +163,8 @@ fun PlacesMapDialog(
                             setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                         })
                     }
-                    map.post {
+                    if (!zoomedOnce[0]) map.post {
+                        zoomedOnce[0] = true
                         if (points.size >= 2) {
                             map.zoomToBoundingBox(BoundingBox.fromGeoPoints(points), false, (60 * density).toInt())
                         } else if (points.size == 1) {
@@ -177,7 +217,14 @@ fun PlacesMapDialog(
                         Text(p.areaLabel, style = MaterialTheme.typography.bodySmall, color = AppColors.TextMuted)
                     }
                     Text(
-                        "${places.size} Ziele markiert · Marker antippen zum Auswählen",
+                        walkRoute?.let { "🚶 Fußweg ${formatDistance(it.distanceMeters)} · ca. ${it.durationMinutes} Min" }
+                            ?: "Fußweg wird berechnet …",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppColors.Orange
+                    )
+                    Text(
+                        "${places.size} Ziele markiert · Herauszoomen lädt weitere · Marker antippen zum Auswählen",
                         style = MaterialTheme.typography.bodySmall,
                         color = AppColors.TextMuted
                     )

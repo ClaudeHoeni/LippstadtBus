@@ -12,7 +12,12 @@ data class PoiCategory(
     val fallbackKeyword: String,
     val isTransitStopSearch: Boolean = false,
     /** Nur Treffer, deren Name dies enthält (Markensuche, z. B. "rewe"). */
-    val nameFilter: String? = null
+    val nameFilter: String? = null,
+    /**
+     * Küchen-Suche (Inder, Italiener …): Namensmuster für die schnelle Umkreissuche, die keine
+     * Küche kennt. Overpass sucht parallel direkt nach "cuisine".
+     */
+    val nameRegex: String? = null
 )
 
 data class ParsedVoiceQuery(
@@ -103,6 +108,14 @@ private val POI_RULES = listOf(
         PoiCategory("Geldautomat / Bank", listOf("""["amenity"="atm"]""", """["amenity"="bank"]"""), "Bank"),
         brands = setOf("sparkasse", "volksbank")
     ),
+    PoiRule(
+        rx("kunst|galerie|galerien|gallery|ausstellung|ausstellungen|kunsthalle|kunstmuseum|vernissage|atelier"),
+        PoiCategory(
+            "Galerie / Ausstellung",
+            listOf("""["tourism"="gallery"]""", """["shop"="art"]""", """["amenity"="arts_centre"]""", """["tourism"="museum"]"""),
+            "Galerie"
+        )
+    ),
     PoiRule(rx("café|cafe|kaffee"), PoiCategory("Café", listOf("""["amenity"="cafe"]"""), "Café")),
     // Bewusst NICHT "essen" allein – sonst wird "nach Essen" (Stadt) zur Restaurantsuche.
     PoiRule(
@@ -124,11 +137,73 @@ private val POI_RULES = listOf(
     )
 )
 
+
+private fun cuisine(label: String, cuisineRegex: String, names: String, diet: String? = null): PoiCategory {
+    val filter = if (diet != null) """["$diet"~"yes|only"]""" else """["cuisine"~"$cuisineRegex",i]"""
+    return PoiCategory(
+        label = label,
+        overpassQueries = listOf("""["amenity"="restaurant"]$filter""", """["amenity"="fast_food"]$filter"""),
+        fallbackKeyword = label,
+        nameRegex = names
+    )
+}
+
+private val CUISINE_RULES = listOf(
+    PoiRule(
+        rx("inder|indisch|indische[nrs]?|indian|curry"),
+        cuisine("Indisches Restaurant", "indian", "india|indisch|indian|taj|curry|masala|punjab|bombay|delhi|maharaja|ganesha|tandoor|bollywood")
+    ),
+    PoiRule(
+        rx("vietnamese|vietnamesen|vietnamesisch|vietnamesische[nrs]?|pho"),
+        cuisine("Vietnamesisches Restaurant", "vietnamese", "vietnam|pho|saigon|hanoi|banh|bun|viet")
+    ),
+    PoiRule(
+        rx("chinese|chinesen|chinesisch|chinesische[nrs]?|china"),
+        cuisine("Chinesisches Restaurant", "chinese", "china|chines|peking|beijing|canton|kanton|shanghai|wok|dragon|drachen|mandarin|hongkong")
+    ),
+    PoiRule(
+        rx("asiate|asiaten|asiatisch|asiatische[nrs]?|asia|wok|sushi|japaner|japanisch|thai|thailänder|koreaner|koreanisch"),
+        cuisine(
+            "Asiatisches Restaurant", "asian|chinese|japanese|thai|vietnamese|sushi|korean",
+            "asia|wok|sushi|thai|vietnam|pho|japan|korea|ramen|bao|china|saigon|bangkok|tokyo|kyoto"
+        )
+    ),
+    PoiRule(
+        rx("italiener|italienisch|italienische[nrs]?|pizza|pizzeria|pasta"),
+        cuisine("Italienisches Restaurant", "italian|pizza", "pizza|pizzeria|italia|trattoria|ristorante|osteria|roma|napoli|venezia|pasta|toscana|sicilia|bella")
+    ),
+    PoiRule(
+        rx("grieche|griechen|griechisch|griechische[nrs]?"),
+        cuisine("Griechisches Restaurant", "greek", "griech|hellas|akropolis|athen|olymp|mykonos|zorbas|taverna|sirtaki|kreta|rhodos")
+    ),
+    PoiRule(
+        rx("türke|türken|türkisch|türkische[nrs]?"),
+        cuisine("Türkisches Restaurant", "turkish|kebab", "türk|istanbul|anatol|kebab|döner|bosporus|ankara|izmir")
+    ),
+    PoiRule(
+        rx("mexikaner|mexikanisch|mexikanische[nrs]?|tacos?|burrito"),
+        cuisine("Mexikanisches Restaurant", "mexican", "mexi|taco|burrito|cantina|chili|azteca")
+    ),
+    PoiRule(
+        rx("vegan|veganer|vegane[nrs]?"),
+        cuisine("Veganes Restaurant", "", "vegan|veggie|plant", diet = "diet:vegan")
+    ),
+    PoiRule(
+        rx("vegetarisch|vegetarier|vegetarische[nrs]?|veggie"),
+        cuisine("Vegetarisches Restaurant", "", "vegan|veggie|vegetar|plant", diet = "diet:vegetarian")
+    ),
+    PoiRule(
+        rx("burger|hamburger"),
+        cuisine("Burger", "burger", "burger")
+    )
+)
+
 private data class PoiHit(val category: PoiCategory, val keywordStart: Int, val keywordEnd: Int)
 
 private fun detectPoiCategory(text: String): PoiHit? {
     val lower = text.lowercase(GERMAN)
-    for (rule in POI_RULES) {
+    // Küchen zuerst prüfen ("Asia Wok" vor "Imbiss"), dann die übrigen Kategorien
+    for (rule in CUISINE_RULES + POI_RULES) {
         val m = rule.regex.find(lower) ?: continue
         val keyword = m.value
         val category = if (keyword in rule.brands) {
