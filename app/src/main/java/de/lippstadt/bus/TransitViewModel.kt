@@ -88,6 +88,10 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     var timeLabel by mutableStateOf<String?>(null)
         private set
 
+    /** Suchbegriff der letzten Kategoriesuche (z. B. "Supermarkt") – für Google Maps. */
+    var poiKeyword by mutableStateOf<String?>(null)
+        private set
+
     /** Mehrere passende Straßen -> Auswahl-Popup. */
     var streetChoices by mutableStateOf<List<GeoCandidate>>(emptyList())
         private set
@@ -396,6 +400,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
                 val city = cityFor(loc)
                 val category = parsed.poiCategory
+                poiKeyword = category?.fallbackKeyword
                 if (category != null) {
                     // Bei "Apotheke am Markt" um den Ankerort herum suchen statt um den Nutzer.
                     var centerLat = loc.lat

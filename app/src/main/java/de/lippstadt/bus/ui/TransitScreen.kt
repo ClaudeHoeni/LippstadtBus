@@ -79,6 +79,8 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
     val context = LocalContext.current
     var pendingVoice by rememberSaveable { mutableStateOf(false) }
     var askedLocation by rememberSaveable { mutableStateOf(false) }
+    var showMapChoice by remember { mutableStateOf(false) }
+    var showOsmMap by remember { mutableStateOf(false) }
 
     fun hasAudio() = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
@@ -129,6 +131,71 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
         if (!SystemActions.openInMaps(context, lat, lon, label)) vm.postStatus("Keine Karten-App gefunden.")
     }
 
+    fun openGoogle() {
+        val last = conn?.legs?.lastOrNull()
+        val lat = place?.lat ?: last?.toLat ?: vm.userLocation?.lat
+        val lon = place?.lon ?: last?.toLon ?: vm.userLocation?.lon
+        if (lat == null || lon == null) {
+            vm.postStatus("Kein Ziel oder Standort für die Karte.")
+            return
+        }
+        // Bei Kategoriesuche um den eigenen Standort suchen lassen, sonst das Ziel zeigen
+        val keyword = vm.poiKeyword
+        val centerLat = if (keyword != null) vm.userLocation?.lat ?: lat else lat
+        val centerLon = if (keyword != null) vm.userLocation?.lon ?: lon else lon
+        if (!SystemActions.openGoogleMaps(context, centerLat, centerLon, place?.name ?: last?.toStop ?: "", keyword)) {
+            vm.postStatus("Google Maps nicht verfügbar.")
+        }
+    }
+
+    if (showMapChoice) {
+        AlertDialog(
+            onDismissRequest = { showMapChoice = false },
+            containerColor = AppColors.Card,
+            title = { Text("Karte öffnen", color = AppColors.Text, style = MaterialTheme.typography.titleLarge) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Pill(
+                        "OpenStreetMap – alle Ziele markiert",
+                        onClick = { showMapChoice = false; showOsmMap = true },
+                        filled = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Zeigt die Treffer dieser App (bis zu 6 im Umkreis) und deinen Standort. Marker antippen wählt das Ziel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextMuted
+                    )
+                    Pill(
+                        "Google Maps",
+                        onClick = { showMapChoice = false; openGoogle() },
+                        color = AppColors.Pink,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "Bei Kategorien (z. B. Supermarkt) zeigt Google alle Orte, die Google kennt – oft mehr. Sonst nur das Ziel.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.TextMuted
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = { Pill("Abbrechen", onClick = { showMapChoice = false }) }
+        )
+    }
+
+    if (showOsmMap) {
+        PlacesMapDialog(
+            places = vm.places.ifEmpty { listOfNotNull(place) },
+            selectedIndex = vm.selectedPlace,
+            userLat = vm.userLocation?.lat,
+            userLon = vm.userLocation?.lon,
+            onSelect = { vm.selectPlace(it) },
+            onGoogleMaps = { openGoogle() },
+            onClose = { showOsmMap = false }
+        )
+    }
+
     if (vm.streetChoices.isNotEmpty()) {
         StreetChoiceDialog(vm)
     }
@@ -144,10 +211,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 onVoice = { startVoice() },
                 onSpeak = { vm.toggleSpeakActive() },
                 buildNumber = vm.buildNumber,
-                onMap = {
-                    val last = conn?.legs?.lastOrNull()
-                    openMap(place?.lat ?: last?.toLat, place?.lon ?: last?.toLon, place?.name ?: last?.toStop ?: "")
-                }
+                onMap = { showMapChoice = true }
             )
         }
     ) { padding ->
