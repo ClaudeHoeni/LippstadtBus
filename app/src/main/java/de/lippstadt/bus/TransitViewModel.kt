@@ -501,7 +501,8 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     val pool = if (category.isTransitStopSearch) pois else pois.filter { !it.isStop }.ifEmpty { pois }
                     val sorted = pool.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
                     if (sorted.isEmpty()) {
-                        status = "Keine ${category.label} gefunden."
+                        status = "Keine ${category.label} im Umkreis von 2,5 km gefunden. " +
+                            "Evtl. liegt der Ort außerhalb – mit Ortsangabe versuchen, z. B. „${category.label} am Markt“."
                         return@launch
                     }
                     places = sorted
@@ -526,7 +527,9 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                     status = "Suche „$destText“ …"
                     val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city)
                     if (candidates.isEmpty()) {
-                        status = "Ziel „$destText“ nicht gefunden."
+                        val cityHint = city.ifBlank { "Ortsname" }
+                        status = "Ziel „$destText“ nicht gefunden. Es liegt womöglich außerhalb des Suchradius " +
+                            "(5 km, eindeutige Namen 50 km) – mit Ort versuchen, z. B. „$destText, $cityHint“."
                         return@launch
                     }
                     places = candidates
