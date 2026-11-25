@@ -216,7 +216,8 @@ object TransitApi {
         rawQuery: String,
         biasLat: Double,
         biasLon: Double,
-        cityContext: String
+        cityContext: String,
+        wide: Boolean = false
     ): List<GeoCandidate> = withContext(Dispatchers.IO) {
         val cleanQuery = sanitizeTranscriptWords(rawQuery.trim())
         if (cleanQuery.isBlank()) return@withContext emptyList()
@@ -234,7 +235,7 @@ object TransitApi {
             tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
         }
 
-        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon, cityContext)
+        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon, cityContext, wide)
         dedupe(sorted, minMeters = 300.0)
     }
 

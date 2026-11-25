@@ -446,7 +446,18 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------ Suche
 
-    fun search(rawOverride: String? = null) {
+    /** Letzte Suche ohne Treffer – kann mit größerem Radius wiederholt werden. */
+    var widenQuery by mutableStateOf<String?>(null)
+        private set
+
+    /** Suche mit größerem Radius wiederholen (Orte bis 100 km, Kategorien bis 10 km). */
+    fun searchWider() {
+        val q = widenQuery ?: return
+        search(q, wide = true)
+    }
+
+    fun search(rawOverride: String? = null, wide: Boolean = false) {
+        widenQuery = null
         touch()
         val raw = sanitizeTranscriptWords(rawOverride ?: query)
         if (raw.isBlank()) {
@@ -497,12 +508,18 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     status = "Suche ${category.label} …"
-                    val pois = TransitApi.searchNearbyPois(centerLat, centerLon, category, city, radiusMeters = 2500)
+                    val pois = TransitApi.searchNearbyPois(
+                        centerLat, centerLon, category, city,
+                        radiusMeters = if (wide) 10_000 else 2500,
+                        maxResults = if (wide) 15 else 10
+                    )
                     val pool = if (category.isTransitStopSearch) pois else pois.filter { !it.isStop }.ifEmpty { pois }
                     val sorted = pool.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
                     if (sorted.isEmpty()) {
-                        status = "Keine ${category.label} im Umkreis von 2,5 km gefunden. " +
-                            "Evtl. liegt der Ort außerhalb – mit Ortsangabe versuchen, z. B. „${category.label} am Markt“."
+                        status = if (wide) "Keine ${category.label} im Umkreis von 10 km gefunden."
+                        else "Keine ${category.label} im Umkreis von 2,5 km gefunden. " +
+                            "Evtl. liegt der Ort außerhalb – Radius vergrößern oder mit Ort suchen, z. B. „${category.label} am Markt“."
+                        if (!wide) widenQuery = raw
                         return@launch
                     }
                     places = sorted
@@ -525,11 +542,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     status = "Suche „$destText“ …"
-                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city)
+                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city, wide)
                     if (candidates.isEmpty()) {
                         val cityHint = city.ifBlank { "Ortsname" }
-                        status = "Ziel „$destText“ nicht gefunden. Es liegt womöglich außerhalb des Suchradius " +
-                            "(5 km, eindeutige Namen 50 km) – mit Ort versuchen, z. B. „$destText, $cityHint“."
+                        status = if (wide) "Ziel „$destText“ auch im Umkreis von 100 km nicht gefunden. " +
+                            "Mit Ort versuchen, z. B. „$destText, $cityHint“."
+                        else "Ziel „$destText“ nicht gefunden. Es liegt womöglich außerhalb des Suchradius " +
+                            "(5 km, eindeutige Namen 50 km) – Radius vergrößern oder mit Ort suchen, z. B. „$destText, $cityHint“."
+                        if (!wide) widenQuery = raw
                         return@launch
                     }
                     places = candidates
