@@ -262,10 +262,15 @@ object TransitApi {
         val raw = coroutineScope {
             tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
         }
-        val matches = raw
+        val fuzzy = raw
             .filter { c -> !c.isStop && variants.any { StreetMatch.similar(c.name, it) } }
             .filter { distanceMeters(lat, lon, it.lat, it.lon) <= radiusMeters }
             .sortedBy { distanceMeters(lat, lon, it.lat, it.lon) }
+        // Exakte Namen ("Berlinickeplatz") vor Teiltreffern ("Schule am Berlinickeplatz") – gibt es
+        // exakte, werden nur diese angeboten (kein unnötiges Auswahl-Popup).
+        val variantKeys = variants.map { StreetMatch.normalize(it) }.toSet()
+        val exact = fuzzy.filter { StreetMatch.normalize(it.name) in variantKeys }
+        val matches = exact.ifEmpty { fuzzy }
         val out = mutableListOf<GeoCandidate>()
         for (c in matches) {
             val key = StreetMatch.normalize(c.name)

@@ -7,6 +7,14 @@ object GeoRanking {
 
     private const val REGION_RADIUS_M = 30_000.0
     private const val MAX_LOCAL_M = 5_000.0
+    private const val EXACT_MAX_M = 50_000.0
+
+    private val GENERIC_NAMES = setOf(
+        "friedhof", "rathaus", "bahnhof", "hauptbahnhof", "kirche", "schule", "markt", "marktplatz", "post",
+        "krankenhaus", "kino", "schwimmbad", "freibad", "hallenbad", "stadion", "sportplatz", "park", "zentrum",
+        "dorfplatz", "kirchplatz", "schulstraße", "hauptstraße", "bahnhofstraße", "kirchstraße", "gartenstraße",
+        "lindenstraße", "dorfstraße", "busbahnhof", "polizei", "feuerwehr", "museum", "bibliothek", "theater"
+    )
 
     fun rank(
         raw: List<GeoCandidate>,
@@ -45,7 +53,18 @@ object GeoRanking {
             val area = tokens(c.areaLabel)
             return queryTokens.any { it in area }
         }
-        val candidates = sorted.filter { dist(it) <= MAX_LOCAL_M || cityMatch(it) }
+        // Exakter Name (z. B. "Berlinickeplatz (Berlin)", "Lippstadt, Tivoli") bleibt bis 50 km erhalten –
+        // sonst verschwand ein eindeutiges Ziel, sobald man > 5 km entfernt war.
+        // Nur eindeutige Namen: Allerweltsnamen ("Friedhof", "Rathaus") gibt es in jedem Ort, und wenn
+        // mehrere weit verstreute exakte Treffer existieren, ist der Name ebenfalls nicht eindeutig.
+        val exactAll = sorted.filter { tokens(nameCore(it.name)) == queryTokens }
+        val exactSpread = exactAll.any { a -> exactAll.any { b -> distanceMeters(a.lat, a.lon, b.lat, b.lon) > 20_000 } }
+        val genericQuery = queryTokens.size == 1 && queryTokens.first() in GENERIC_NAMES
+        fun exactCore(c: GeoCandidate): Boolean =
+            !genericQuery && !exactSpread && tokens(nameCore(c.name)) == queryTokens
+        val candidates = sorted.filter {
+            dist(it) <= MAX_LOCAL_M || cityMatch(it) || (exactCore(it) && dist(it) <= EXACT_MAX_M)
+        }
 
         val local = candidates.filter { c ->
             dist(c) <= REGION_RADIUS_M && (tokens(c.name) + tokens(c.areaLabel)).containsAll(queryTokens)
@@ -64,6 +83,10 @@ object GeoRanking {
         }
         return candidates
     }
+
+    /** "Berlinickeplatz (Berlin)" -> "Berlinickeplatz", "Lippstadt, Tivoli" -> "Tivoli". */
+    private fun nameCore(name: String): String =
+        name.replace(Regex("\\(.*?\\)"), "").let { if (it.contains(", ")) it.substringAfter(", ") else it }.trim()
 
     private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
 

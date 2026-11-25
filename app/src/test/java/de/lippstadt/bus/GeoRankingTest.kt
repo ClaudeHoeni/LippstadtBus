@@ -50,4 +50,11 @@ class GeoRankingTest {
         val erwitte = GeoCandidate("Erwitte", "59597 Kreis Soest, Erwitte", 51.61, 8.34)
         assertEquals(listOf(erwitte), GeoRanking.rank(listOf(erwitte), "Erwitte", lat, lon))
     }
+
+    @Test
+    fun exactNameKeptBeyondFiveKm() {
+        // Ostkreuz -> Berlinickeplatz ca. 9 km
+        val stop = GeoCandidate("Berlinickeplatz (Berlin)", "12103 Tempelhof-Schöneberg, Tempelhof", 52.46582, 13.378505, isStop = true)
+        assertEquals(listOf(stop), GeoRanking.rank(listOf(stop), "Berlinickeplatz", 52.5030, 13.4690))
+    }
 }
