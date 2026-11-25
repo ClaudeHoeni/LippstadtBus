@@ -162,7 +162,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        "Zeigt die Treffer dieser App (bis zu 6 im Umkreis) und deinen Standort. Marker antippen wählt das Ziel.",
+                        "Zeigt die Treffer dieser App (bis zu 10 im Umkreis) und deinen Standort. Marker antippen wählt das Ziel.",
                         style = MaterialTheme.typography.bodySmall,
                         color = AppColors.TextMuted
                     )

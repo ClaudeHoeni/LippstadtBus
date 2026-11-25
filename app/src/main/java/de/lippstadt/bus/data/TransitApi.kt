@@ -114,8 +114,11 @@ object TransitApi {
             }
         }
 
-        // Hauptquelle: Photon-Umkreissuche (OSM-Daten, nach Entfernung sortiert, < 1 s).
-        if (found.isEmpty()) found += photonNearby(centerLat, centerLon, category, radiusMeters)
+        // Photon-Umkreissuche (OSM-Daten, nach Entfernung sortiert, < 1 s). Bei Haltestellen IMMER
+        // zusätzlich – Transitous allein lieferte oft nur Haltestellen in einer Richtung.
+        if (found.isEmpty() || category.isTransitStopSearch) {
+            found += photonNearby(centerLat, centerLon, category, radiusMeters)
+        }
 
         // Reserve: Overpass (alle Server parallel, max. 10 s).
         if (found.isEmpty()) found += overpassSearch(centerLat, centerLon, category, radiusMeters)
@@ -128,7 +131,13 @@ object TransitApi {
                 .filter { distanceMeters(centerLat, centerLon, it.lat, it.lon) <= radiusMeters * 1.5 }
         }
 
-        dedupe(found.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }, minMeters = 40.0)
+        // Gleichnamige Bahnsteige/Masten einer Haltestelle nur einmal zählen, damit Platz für
+        // Haltestellen in allen Richtungen bleibt.
+        dedupe(
+            found.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) },
+            minMeters = if (category.isTransitStopSearch) 300.0 else 60.0,
+            max = 10
+        )
     }
 
     /** Eigener Scope, damit blockierende HTTP-Aufrufe nicht abgewartet werden müssen, wenn ein anderer schneller war. */
@@ -296,12 +305,22 @@ object TransitApi {
         return "${if (zip.isNotBlank()) "$zip " else ""}${parts.takeLast(2).joinToString(", ")}".trim()
     }
 
+    /** Namen vergleichbar machen: "S+U Tempelhof (Berlin)", "Lippstadt, Tivoli" -> "tempelhof", "tivoli". */
+    private fun nameKey(name: String): String = StreetMatch.normalize(
+        name.replace(Regex("\\(.*?\\)"), "")
+            .substringAfter(", ")
+            .replace(Regex("^(S\\+U|S|U)\\s+"), "")
+            .trim()
+    )
+
+    private fun sameName(a: String, b: String): Boolean = nameKey(a) == nameKey(b)
+
     private fun dedupe(list: List<GeoCandidate>, minMeters: Double, max: Int = 6): List<GeoCandidate> {
         val out = mutableListOf<GeoCandidate>()
         for (c in list) {
             val isDuplicate = out.any {
                 val d = distanceMeters(it.lat, it.lon, c.lat, c.lon)
-                d < 15.0 || (d < minMeters && it.name.equals(c.name, ignoreCase = true))
+                d < 15.0 || (d < minMeters && sameName(it.name, c.name))
             }
             if (!isDuplicate) out += c
             if (out.size >= max) break
