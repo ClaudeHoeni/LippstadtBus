@@ -404,9 +404,11 @@ object TransitApi {
                 ?: return@runCatching null
             if (100 + run <= currentVersionCode) return@runCatching null
             val assets = obj.optJSONArray("assets") ?: return@runCatching null
-            (0 until assets.length())
+            val urls = (0 until assets.length())
                 .mapNotNull { assets.optJSONObject(it)?.optString("browser_download_url", "") }
-                .firstOrNull { it.endsWith(".apk") }
+                .filter { it.endsWith(".apk") }
+            // Gezielt ABFAHRTEN.apk nehmen – im Release lag noch eine alte app-debug.apk
+            (urls.firstOrNull { it.endsWith("/ABFAHRTEN.apk") } ?: urls.firstOrNull())
                 ?.let { AppUpdateInfo(title, it) }
         }.getOrNull()
     }
