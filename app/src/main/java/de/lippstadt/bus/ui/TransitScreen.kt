@@ -528,7 +528,7 @@ private fun SearchCard(vm: TransitViewModel, onVoice: () -> Unit) {
         if (vm.widenQuery != null && !vm.isLoading) {
             VSpace(10.dp)
             Pill(
-                "🔍 Größeren Radius suchen",
+                "🔍 Radius auf ${vm.nextRadiusKm} km erweitern",
                 onClick = { vm.searchWider() },
                 filled = true,
                 modifier = Modifier.fillMaxWidth()

@@ -8,8 +8,6 @@ object GeoRanking {
     private const val REGION_RADIUS_M = 30_000.0
     private const val MAX_LOCAL_M = 5_000.0
     private const val EXACT_MAX_M = 50_000.0
-    private const val WIDE_LOCAL_M = 100_000.0
-    private const val WIDE_EXACT_M = 300_000.0
 
     private val GENERIC_NAMES = setOf(
         "friedhof", "rathaus", "bahnhof", "hauptbahnhof", "kirche", "schule", "markt", "marktplatz", "post",
@@ -24,11 +22,11 @@ object GeoRanking {
         biasLat: Double,
         biasLon: Double,
         city: String = "",
-        /** Größerer Radius (vom Nutzer angefordert): 100 km statt 5 km, eindeutige Namen 300 km. */
-        wide: Boolean = false
+        /** Suchradius: Standard 5 km, vom Nutzer erweiterbar auf 10 bzw. 15 km. */
+        maxLocalMeters: Double = MAX_LOCAL_M
     ): List<GeoCandidate> {
-        val maxLocal = if (wide) WIDE_LOCAL_M else MAX_LOCAL_M
-        val exactMax = if (wide) WIDE_EXACT_M else EXACT_MAX_M
+        val maxLocal = maxLocalMeters
+        val exactMax = maxOf(EXACT_MAX_M, maxLocalMeters)
         if (raw.isEmpty()) return raw
         val lowerQuery = query.lowercase(Locale.GERMANY).trim()
         fun dist(c: GeoCandidate) = distanceMeters(biasLat, biasLon, c.lat, c.lon)
