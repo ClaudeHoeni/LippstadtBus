@@ -525,6 +525,15 @@ private fun SearchCard(vm: TransitViewModel, onVoice: () -> Unit) {
         } else {
             Text(vm.status, style = MaterialTheme.typography.bodyMedium, color = AppColors.TextMuted)
         }
+        if (vm.widenQuery != null && !vm.isLoading) {
+            VSpace(10.dp)
+            Pill(
+                "🔍 Radius auf ${vm.nextRadiusKm} km erweitern",
+                onClick = { vm.searchWider() },
+                filled = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
         vm.timeLabel?.let {
             VSpace(6.dp)
             Row(verticalAlignment = Alignment.CenterVertically) {

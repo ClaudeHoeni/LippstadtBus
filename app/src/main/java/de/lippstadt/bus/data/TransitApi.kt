@@ -216,7 +216,8 @@ object TransitApi {
         rawQuery: String,
         biasLat: Double,
         biasLon: Double,
-        cityContext: String
+        cityContext: String,
+        radiusMeters: Int = 5_000
     ): List<GeoCandidate> = withContext(Dispatchers.IO) {
         val cleanQuery = sanitizeTranscriptWords(rawQuery.trim())
         if (cleanQuery.isBlank()) return@withContext emptyList()
@@ -234,7 +235,7 @@ object TransitApi {
             tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
         }
 
-        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon, cityContext)
+        val sorted = GeoRanking.rank(raw, cleanQuery, biasLat, biasLon, cityContext, radiusMeters.toDouble())
         dedupe(sorted, minMeters = 300.0)
     }
 
@@ -262,10 +263,15 @@ object TransitApi {
         val raw = coroutineScope {
             tasks.map { t -> async { runCatching { t() }.getOrDefault(emptyList()) } }.awaitAll().flatten()
         }
-        val matches = raw
+        val fuzzy = raw
             .filter { c -> !c.isStop && variants.any { StreetMatch.similar(c.name, it) } }
             .filter { distanceMeters(lat, lon, it.lat, it.lon) <= radiusMeters }
             .sortedBy { distanceMeters(lat, lon, it.lat, it.lon) }
+        // Exakte Namen ("Berlinickeplatz") vor Teiltreffern ("Schule am Berlinickeplatz") – gibt es
+        // exakte, werden nur diese angeboten (kein unnötiges Auswahl-Popup).
+        val variantKeys = variants.map { StreetMatch.normalize(it) }.toSet()
+        val exact = fuzzy.filter { StreetMatch.normalize(it.name) in variantKeys }
+        val matches = exact.ifEmpty { fuzzy }
         val out = mutableListOf<GeoCandidate>()
         for (c in matches) {
             val key = StreetMatch.normalize(c.name)

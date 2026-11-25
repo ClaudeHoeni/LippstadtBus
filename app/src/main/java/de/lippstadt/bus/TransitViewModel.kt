@@ -57,6 +57,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     private companion object {
         const val GPS_IDLE_MS = 2 * 60_000L
         const val FAVORITE_SLOTS = 4
+        val SEARCH_RADII_KM = listOf(5, 10, 15)
     }
 
     private val ctx get() = getApplication<Application>()
@@ -446,7 +447,28 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------ Suche
 
-    fun search(rawOverride: String? = null) {
+    /** Letzte Suche ohne Treffer – kann mit größerem Radius wiederholt werden. */
+    var widenQuery by mutableStateOf<String?>(null)
+        private set
+
+    /** Radius der nächsten Erweiterung (10 bzw. 15 km) für den Button-Text. */
+    var nextRadiusKm by mutableIntStateOf(10)
+        private set
+
+    /** Suche mit nächstgrößerem Radius wiederholen: 5 km → 10 km → 15 km. */
+    private fun offerWider(raw: String, currentKm: Int) {
+        val next = SEARCH_RADII_KM.firstOrNull { it > currentKm } ?: return
+        nextRadiusKm = next
+        widenQuery = raw
+    }
+
+    fun searchWider() {
+        val q = widenQuery ?: return
+        search(q, radiusKm = nextRadiusKm)
+    }
+
+    fun search(rawOverride: String? = null, radiusKm: Int = SEARCH_RADII_KM.first()) {
+        widenQuery = null
         touch()
         val raw = sanitizeTranscriptWords(rawOverride ?: query)
         if (raw.isBlank()) {
@@ -497,11 +519,17 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     status = "Suche ${category.label} …"
-                    val pois = TransitApi.searchNearbyPois(centerLat, centerLon, category, city, radiusMeters = 2500)
+                    val pois = TransitApi.searchNearbyPois(
+                        centerLat, centerLon, category, city,
+                        radiusMeters = radiusKm * 1000,
+                        maxResults = if (radiusKm > 5) 15 else 10
+                    )
                     val pool = if (category.isTransitStopSearch) pois else pois.filter { !it.isStop }.ifEmpty { pois }
                     val sorted = pool.sortedBy { distanceMeters(centerLat, centerLon, it.lat, it.lon) }
                     if (sorted.isEmpty()) {
-                        status = "Keine ${category.label} gefunden."
+                        status = "Keine ${category.label} im Umkreis von $radiusKm km gefunden. " +
+                            "Evtl. liegt der Ort außerhalb – Radius vergrößern oder mit Ort suchen, z. B. „${category.label} am Markt“."
+                        offerWider(raw, radiusKm)
                         return@launch
                     }
                     places = sorted
@@ -510,7 +538,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     if (parsed.isStreet) {
                         status = "Suche Straße „$destText“ …"
-                        val streets = TransitApi.searchStreets(destText, loc.lat, loc.lon, city)
+                        val streets = TransitApi.searchStreets(destText, loc.lat, loc.lon, city, radiusMeters = maxOf(10, radiusKm) * 1000)
                         if (streets.isNotEmpty()) {
                             places = streets
                             isPoiResult = false
@@ -524,9 +552,12 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                     status = "Suche „$destText“ …"
-                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city)
+                    val candidates = TransitApi.geocode(destText, loc.lat, loc.lon, city, radiusKm * 1000)
                     if (candidates.isEmpty()) {
-                        status = "Ziel „$destText“ nicht gefunden."
+                        val cityHint = city.ifBlank { "Ortsname" }
+                        status = "Ziel „$destText“ im Umkreis von $radiusKm km nicht gefunden. Es liegt womöglich " +
+                            "außerhalb des Suchradius – Radius vergrößern oder mit Ort suchen, z. B. „$destText, $cityHint“."
+                        offerWider(raw, radiusKm)
                         return@launch
                     }
                     places = candidates
