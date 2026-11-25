@@ -690,6 +690,17 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             isUpdating = true
             try {
                 val apk = TransitApi.downloadApk(upd, File(ctx.cacheDir, "update.apk"))
+                // Nur installieren, wenn die Datei wirklich neuer ist. Schlug der Upload eines Builds fehl,
+                // lag im Release noch die alte APK -> Endlosschleife "Update 114" mit Version 112.
+                @Suppress("DEPRECATION")
+                val apkCode = ctx.packageManager.getPackageArchiveInfo(apk.absolutePath, 0)?.versionCode ?: 0
+                if (apkCode <= BuildConfig.VERSION_CODE) {
+                    apk.delete()
+                    availableUpdate = null
+                    lastUpdateCheck = System.currentTimeMillis()
+                    status = "Update ist noch nicht fertig hochgeladen – bitte später erneut versuchen."
+                    return@launch
+                }
                 SystemActions.installApk(ctx, apk)
             } catch (e: CancellationException) {
                 throw e
