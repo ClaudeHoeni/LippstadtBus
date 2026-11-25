@@ -56,6 +56,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val GPS_IDLE_MS = 2 * 60_000L
+        const val FAVORITE_SLOTS = 4
     }
 
     private val ctx get() = getApplication<Application>()
@@ -110,6 +111,86 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
     private var isPoiResult = false
 
     private val fusedLocation = LocationServices.getFusedLocationProviderClient(app)
+
+    // ------------------------------------------------------------ Favoriten (4 Plätze, lokal gespeichert)
+
+    private val prefs = app.getSharedPreferences("favoriten", android.content.Context.MODE_PRIVATE)
+
+    var favorites by mutableStateOf(loadFavorites())
+        private set
+
+    private fun loadFavorites(): List<GeoCandidate?> = (0 until FAVORITE_SLOTS).map { i ->
+        prefs.getString("fav_$i", null)?.let { raw ->
+            runCatching {
+                val o = org.json.JSONObject(raw)
+                GeoCandidate(
+                    name = o.getString("name"),
+                    areaLabel = o.optString("area", ""),
+                    lat = o.getDouble("lat"),
+                    lon = o.getDouble("lon"),
+                    isStop = o.optBoolean("stop", false)
+                )
+            }.getOrNull()
+        }
+    }
+
+    /** Speichert das aktuell gewählte Ziel auf Platz [slot]. */
+    fun saveFavorite(slot: Int) {
+        val p = activePlace ?: run {
+            status = "Erst ein Ziel suchen, dann als Favorit speichern."
+            return
+        }
+        val json = org.json.JSONObject()
+            .put("name", p.name).put("area", p.areaLabel)
+            .put("lat", p.lat).put("lon", p.lon).put("stop", p.isStop)
+        prefs.edit().putString("fav_$slot", json.toString()).apply()
+        favorites = loadFavorites()
+        status = "„${p.name}“ als Favorit ${slot + 1} gespeichert."
+    }
+
+    fun deleteFavorite(slot: Int) {
+        prefs.edit().remove("fav_$slot").apply()
+        favorites = loadFavorites()
+        status = "Favorit ${slot + 1} gelöscht."
+    }
+
+    /** Verbindung zum Favoriten suchen. */
+    fun goToFavorite(slot: Int) {
+        val fav = favorites.getOrNull(slot) ?: return
+        touch()
+        stopSpeaking()
+        query = fav.name
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            isLoading = true
+            connections = emptyList()
+            places = listOf(fav)
+            streetChoices = emptyList()
+            activeCategory = null
+            poiKeyword = null
+            selectedPlace = 0
+            selectedConnection = 0
+            activeMode = null
+            activeTimeMillis = null
+            timeLabel = null
+            isPoiResult = false
+            try {
+                status = "Ermittle Standort …"
+                val loc = locate()
+                if (loc == null) {
+                    status = "GPS-Standort nicht verfügbar."
+                    return@launch
+                }
+                if (distanceMeters(loc.lat, loc.lon, fav.lat, fav.lon) <= 1_000) showWalkTo(loc, fav) else loadRoute(loc, fav)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                status = "Fehler: ${e.localizedMessage ?: "Netzwerkproblem"}"
+            } finally {
+                isLoading = false
+            }
+        }
+    }
 
     // ------------------------------------------------------------ Sprachausgabe
 
