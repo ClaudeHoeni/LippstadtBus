@@ -7,7 +7,7 @@ object GeoRanking {
 
     private const val REGION_RADIUS_M = 30_000.0
     private const val MAX_LOCAL_M = 5_000.0
-    private const val EXACT_MAX_M = 50_000.0
+    private const val EXACT_MAX_M = 15_000.0
 
     private val GENERIC_NAMES = setOf(
         "friedhof", "rathaus", "bahnhof", "hauptbahnhof", "kirche", "schule", "markt", "marktplatz", "post",
@@ -57,7 +57,7 @@ object GeoRanking {
             val area = tokens(c.areaLabel)
             return queryTokens.any { it in area }
         }
-        // Exakter Name (z. B. "Berlinickeplatz (Berlin)", "Lippstadt, Tivoli") bleibt bis 50 km erhalten –
+        // Exakter Name (z. B. "Berlinickeplatz (Berlin)", "Lippstadt, Tivoli") bleibt bis 15 km erhalten –
         // sonst verschwand ein eindeutiges Ziel, sobald man > 5 km entfernt war.
         // Nur eindeutige Namen: Allerweltsnamen ("Friedhof", "Rathaus") gibt es in jedem Ort, und wenn
         // mehrere weit verstreute exakte Treffer existieren, ist der Name ebenfalls nicht eindeutig.
