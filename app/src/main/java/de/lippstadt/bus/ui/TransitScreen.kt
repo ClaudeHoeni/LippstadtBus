@@ -233,6 +233,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 city = vm.gpsCity,
                 gpsActive = vm.gpsActive,
                 isLocating = vm.isLocating,
+                hasFix = vm.userLocation != null,
                 onToggleGps = { vm.toggleGps() }
             )
 
@@ -476,7 +477,7 @@ private fun StreetChoiceDialog(vm: TransitViewModel) {
 }
 
 @Composable
-private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, onToggleGps: () -> Unit) {
+private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, hasFix: Boolean, onToggleGps: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -491,6 +492,7 @@ private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, onTog
         }
         val (dotColor, label) = when {
             isLocating -> AppColors.Orange to "GPS sucht …"
+            gpsActive && !hasFix -> AppColors.Orange to "GPS sucht …"
             gpsActive -> AppColors.Success to (city?.takeIf { it.isNotBlank() } ?: "GPS an")
             else -> AppColors.TextMuted to "GPS aus"
         }

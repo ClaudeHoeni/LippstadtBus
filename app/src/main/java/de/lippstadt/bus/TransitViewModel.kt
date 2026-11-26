@@ -401,9 +401,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
         isLocating = true
         return try {
+            // 1. genaues GPS (6 s) → 2. WLAN/Mobilfunk (5 s, klappt auch drinnen/U-Bahn)
+            // → 3. letzter Standort der Google-Dienste → 4. letzter Standort des Systems
             val loc = withTimeoutOrNull(6_000) {
                 runCatching { fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+            } ?: withTimeoutOrNull(5_000) {
+                runCatching { fusedLocation.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await() }.getOrNull()
             } ?: runCatching { fusedLocation.lastLocation.await() }.getOrNull()
+                ?: systemLastKnownLocation()
             if (loc == null) {
                 cached
             } else {
@@ -433,6 +438,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             isLocating = false
         }
     }
+
+    /** Neuester letzter Standort aus dem Android-System (GPS/Netz/passiv). */
+    @SuppressLint("MissingPermission")
+    private fun systemLastKnownLocation(): android.location.Location? = runCatching {
+        val lm = ctx.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+        lm.getProviders(true).mapNotNull { p -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }
+            .maxByOrNull { it.time }
+    }.getOrNull()
 
     private suspend fun resolveCity(lat: Double, lon: Double): String? {
         val local = withContext(Dispatchers.IO) {
