@@ -401,9 +401,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
 
         isLocating = true
         return try {
+            // 1. genaues GPS (6 s) → 2. WLAN/Mobilfunk (5 s, klappt auch drinnen/U-Bahn)
+            // → 3. letzter Standort der Google-Dienste → 4. letzter Standort des Systems
             val loc = withTimeoutOrNull(6_000) {
                 runCatching { fusedLocation.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await() }.getOrNull()
+            } ?: withTimeoutOrNull(5_000) {
+                runCatching { fusedLocation.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null).await() }.getOrNull()
             } ?: runCatching { fusedLocation.lastLocation.await() }.getOrNull()
+                ?: systemLastKnownLocation()
             if (loc == null) {
                 cached
             } else {
@@ -433,6 +438,14 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             isLocating = false
         }
     }
+
+    /** Neuester letzter Standort aus dem Android-System (GPS/Netz/passiv). */
+    @SuppressLint("MissingPermission")
+    private fun systemLastKnownLocation(): android.location.Location? = runCatching {
+        val lm = ctx.getSystemService(android.content.Context.LOCATION_SERVICE) as android.location.LocationManager
+        lm.getProviders(true).mapNotNull { p -> runCatching { lm.getLastKnownLocation(p) }.getOrNull() }
+            .maxByOrNull { it.time }
+    }.getOrNull()
 
     private suspend fun resolveCity(lat: Double, lon: Double): String? {
         val local = withContext(Dispatchers.IO) {
@@ -485,6 +498,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         searchJob = viewModelScope.launch {
             isLoading = true
             connections = emptyList()
+            railOptions = emptyList()
             places = emptyList()
             streetChoices = emptyList()
             activeCategory = null
@@ -607,6 +621,38 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             results.first().firstTransitLeg != null ->
                 "Ab ${results.first().firstTransitLeg!!.fromStop} → ${dest.fullDisplay}$timeHint"
             else -> "Ziel: ${dest.fullDisplay}$timeHint"
+        }
+        loadRailOptions(loc, dest, results)
+    }
+
+    /** Verbindungen ab S-/U-Bahnhöfen in der Nähe – nur in Berlin (eigene Liste). */
+    var railOptions by mutableStateOf<List<TransitConnection>>(emptyList())
+        private set
+    private var railJob: Job? = null
+
+    private fun loadRailOptions(loc: UserLocation, dest: GeoCandidate, base: List<TransitConnection>) {
+        railJob?.cancel()
+        railOptions = emptyList()
+        val city = loc.city.ifBlank { gpsCity.orEmpty() }
+        if (!city.contains("Berlin", ignoreCase = true)) return
+        railJob = viewModelScope.launch {
+            val known = base.map { it.summaryLines + it.firstDepartureTime }.toSet()
+            railOptions = TransitApi.findRailOptions(loc.lat, loc.lon, dest.lat, dest.lon, dest.name, activeTimeMillis)
+                .filter { it.summaryLines + it.firstDepartureTime !in known }
+        }
+    }
+
+    /** Eine S-/U-Bahn-Verbindung aus der Zusatzliste anzeigen. */
+    fun selectRailOption(index: Int) {
+        val opt = railOptions.getOrNull(index) ?: return
+        touch()
+        stopSpeaking()
+        val existing = connections.indexOf(opt)
+        if (existing >= 0) {
+            selectedConnection = existing
+        } else {
+            connections = connections + opt
+            selectedConnection = connections.lastIndex
         }
     }
 

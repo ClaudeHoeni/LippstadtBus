@@ -233,6 +233,7 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 city = vm.gpsCity,
                 gpsActive = vm.gpsActive,
                 isLocating = vm.isLocating,
+                hasFix = vm.userLocation != null,
                 onToggleGps = { vm.toggleGps() }
             )
 
@@ -293,6 +294,10 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                     },
                     onOpenMap = { lat, lon, label -> openMap(lat, lon, label) }
                 )
+            }
+
+            if (vm.railOptions.isNotEmpty()) {
+                RailOptionsCard(vm)
             }
 
             if (vm.connections.size > 1) {
@@ -410,6 +415,41 @@ private fun FavoritesCard(vm: TransitViewModel) {
     }
 }
 
+/** Ausklappbare Liste: S-/U-Bahn ab Bahnhöfen in der Nähe (nur Berlin). */
+@Composable
+private fun RailOptionsCard(vm: TransitViewModel) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    DarkCard {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { open = !open },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SectionLabel("S-/U-Bahn ab Bahnhöfen in der Nähe (${vm.railOptions.size})", AppColors.Violet, Modifier.weight(1f))
+            Text(if (open) "▲" else "▼", color = AppColors.Violet, fontWeight = FontWeight.Bold)
+        }
+        if (open) {
+            VSpace(8.dp)
+            vm.railOptions.forEachIndexed { idx, c ->
+                val walk = c.legs.firstOrNull()?.takeIf { it.isWalk }
+                val selected = vm.activeConnection == c
+                SelectableRow(
+                    selected = selected,
+                    title = c.summaryLines,
+                    subtitle = buildString {
+                        if (walk != null) append("${formatDistance(walk.distanceMeters)} zu Fuß → ${walk.toStop} · ")
+                        append("an ${c.finalArrivalTime} · ${transferLabel(c)}")
+                    },
+                    trailing = c.firstDepartureTime,
+                    onClick = { vm.selectRailOption(idx) },
+                    accent = AppColors.Violet
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun StreetChoiceDialog(vm: TransitViewModel) {
     val loc = vm.userLocation
@@ -437,7 +477,7 @@ private fun StreetChoiceDialog(vm: TransitViewModel) {
 }
 
 @Composable
-private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, onToggleGps: () -> Unit) {
+private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, hasFix: Boolean, onToggleGps: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -452,6 +492,7 @@ private fun Header(city: String?, gpsActive: Boolean, isLocating: Boolean, onTog
         }
         val (dotColor, label) = when {
             isLocating -> AppColors.Orange to "GPS sucht …"
+            gpsActive && !hasFix -> AppColors.Orange to "GPS sucht …"
             gpsActive -> AppColors.Success to (city?.takeIf { it.isNotBlank() } ?: "GPS an")
             else -> AppColors.TextMuted to "GPS aus"
         }
