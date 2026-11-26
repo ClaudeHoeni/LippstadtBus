@@ -295,6 +295,10 @@ fun TransitScreen(vm: TransitViewModel, voiceTrigger: Int) {
                 )
             }
 
+            if (vm.railOptions.isNotEmpty()) {
+                RailOptionsCard(vm)
+            }
+
             if (vm.connections.size > 1) {
                 DarkCard {
                     SectionLabel("Alternativen")
@@ -407,6 +411,41 @@ private fun FavoritesCard(vm: TransitViewModel) {
             style = MaterialTheme.typography.bodySmall,
             color = AppColors.TextMuted
         )
+    }
+}
+
+/** Ausklappbare Liste: S-/U-Bahn ab Bahnhöfen in der Nähe (nur Berlin). */
+@Composable
+private fun RailOptionsCard(vm: TransitViewModel) {
+    var open by rememberSaveable { mutableStateOf(false) }
+    DarkCard {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { open = !open },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SectionLabel("S-/U-Bahn ab Bahnhöfen in der Nähe (${vm.railOptions.size})", AppColors.Violet, Modifier.weight(1f))
+            Text(if (open) "▲" else "▼", color = AppColors.Violet, fontWeight = FontWeight.Bold)
+        }
+        if (open) {
+            VSpace(8.dp)
+            vm.railOptions.forEachIndexed { idx, c ->
+                val walk = c.legs.firstOrNull()?.takeIf { it.isWalk }
+                val selected = vm.activeConnection == c
+                SelectableRow(
+                    selected = selected,
+                    title = c.summaryLines,
+                    subtitle = buildString {
+                        if (walk != null) append("${formatDistance(walk.distanceMeters)} zu Fuß → ${walk.toStop} · ")
+                        append("an ${c.finalArrivalTime} · ${transferLabel(c)}")
+                    },
+                    trailing = c.firstDepartureTime,
+                    onClick = { vm.selectRailOption(idx) },
+                    accent = AppColors.Violet
+                )
+            }
+        }
     }
 }
 

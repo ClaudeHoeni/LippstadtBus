@@ -400,6 +400,85 @@ object TransitApi {
             }.getOrNull()
         }
 
+    // ------------------------------------------------------------ S-/U-Bahn ab Bahnhöfen in der Nähe (Berlin)
+
+    private data class Station(val name: String, val lat: Double, val lon: Double)
+
+    /** S-/U-Bahnhöfe im Umkreis (MOTIS /map/stops), je Station einmal, nach Entfernung sortiert. */
+    private fun railStationsAround(lat: Double, lon: Double, radiusMeters: Int, max: Int): List<Station> {
+        val dLat = radiusMeters / 111_000.0
+        val dLon = radiusMeters / (111_000.0 * Math.cos(Math.toRadians(lat)))
+        val arr = JSONArray(httpGet("$BASE/map/stops?min=${lat - dLat},${lon - dLon}&max=${lat + dLat},${lon + dLon}"))
+        val railName = Regex("^(S|U|S\\+U)\\s")
+        val out = mutableListOf<Station>()
+        (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+            .map { Station(it.optString("name", ""), it.optDouble("lat"), it.optDouble("lon")) }
+            .filter { railName.containsMatchIn(it.name) && distanceMeters(lat, lon, it.lat, it.lon) <= radiusMeters }
+            .sortedBy { distanceMeters(lat, lon, it.lat, it.lon) }
+            .forEach { st -> if (out.none { it.name == st.name } && out.size < max) out += st }
+        return out
+    }
+
+    /**
+     * Zusätzliche Verbindungen ab S-/U-Bahnhöfen bis [radiusMeters] (inkl. Fußweg dorthin). Der Routenplaner
+     * blendet z. B. "1 km Fußweg + S42 direkt" oft aus, wenn eine U-Bahn mit Umstieg schneller ist.
+     */
+    suspend fun findRailOptions(
+        userLat: Double,
+        userLon: Double,
+        destLat: Double,
+        destLon: Double,
+        destName: String,
+        departureMillis: Long? = null,
+        radiusMeters: Int = 1_500
+    ): List<TransitConnection> = withContext(Dispatchers.IO) {
+        runCatching {
+            val stations = railStationsAround(userLat, userLon, radiusMeters, 3)
+            val now = departureMillis ?: System.currentTimeMillis()
+            val railLine = Regex("^(S|U|RE|RB)\\d", RegexOption.IGNORE_CASE)
+            coroutineScope {
+                stations.map { st ->
+                    async {
+                        runCatching {
+                            val walkM = distanceMeters(userLat, userLon, st.lat, st.lon).toInt()
+                            val walkMin = walkMinutesFor(walkM)
+                            val start = now + walkMin * 60_000L
+                            val iso = DateTimeFormatter.ISO_INSTANT.format(Instant.ofEpochMilli(start).truncatedTo(ChronoUnit.SECONDS))
+                            val url = "$BASE/plan?fromPlace=${st.lat},${st.lon}&toPlace=$destLat,$destLon" +
+                                "&time=${enc(iso)}&arriveBy=false&maxPreTransitTime=300&maxPostTransitTime=1800&numItineraries=6"
+                            MotisPlanParser.parse(httpGet(url, timeoutMs = 12_000), destName, destLat, destLon, start)
+                                .filter { !it.isWalkOnly && railLine.containsMatchIn(it.firstLine) }
+                                .map { prependWalkTo(it, userLat, userLon, st, walkM, walkMin) }
+                        }.getOrDefault(emptyList())
+                    }
+                }.awaitAll().flatten()
+            }
+                .distinctBy { it.summaryLines + it.firstDepartureTime }
+                // S-Bahn zuerst (dafür ist die Liste da), dann nach Ankunft
+                .sortedWith(compareBy<TransitConnection>({ !it.firstLine.startsWith("S") }, { it.arrivalMillis }))
+                .take(8)
+        }.getOrDefault(emptyList())
+    }
+
+    private fun prependWalkTo(
+        c: TransitConnection, lat: Double, lon: Double, st: Station, walkM: Int, walkMin: Int
+    ): TransitConnection {
+        val first = c.firstTransitLeg ?: return c
+        val walkStart = c.departureMillis - walkMin * 60_000L
+        val walk = RouteLegInfo(
+            isWalk = true, isTransfer = false, lineName = "Fußweg", direction = "",
+            fromStop = "Aktueller Standort", toStop = sanitizeTranscriptWords(st.name),
+            fromLat = lat, fromLon = lon, toLat = st.lat, toLon = st.lon,
+            startTime = formatHhMm(walkStart), endTime = first.startTime,
+            delayMinutes = 0, durationMinutes = walkMin, distanceMeters = walkM
+        )
+        return c.copy(
+            legs = listOf(walk) + c.legs.dropWhile { it.isWalk },
+            totalWalkMeters = c.totalWalkMeters + walkM,
+            totalDurationMinutes = minutesBetween(walkStart, c.arrivalMillis).coerceAtLeast(1)
+        )
+    }
+
     // ------------------------------------------------------------ App-Update
 
     suspend fun checkForUpdate(currentVersionCode: Int): AppUpdateInfo? = withContext(Dispatchers.IO) {

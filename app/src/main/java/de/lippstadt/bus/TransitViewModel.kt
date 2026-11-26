@@ -485,6 +485,7 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
         searchJob = viewModelScope.launch {
             isLoading = true
             connections = emptyList()
+            railOptions = emptyList()
             places = emptyList()
             streetChoices = emptyList()
             activeCategory = null
@@ -607,6 +608,38 @@ class TransitViewModel(app: Application) : AndroidViewModel(app) {
             results.first().firstTransitLeg != null ->
                 "Ab ${results.first().firstTransitLeg!!.fromStop} → ${dest.fullDisplay}$timeHint"
             else -> "Ziel: ${dest.fullDisplay}$timeHint"
+        }
+        loadRailOptions(loc, dest, results)
+    }
+
+    /** Verbindungen ab S-/U-Bahnhöfen in der Nähe – nur in Berlin (eigene Liste). */
+    var railOptions by mutableStateOf<List<TransitConnection>>(emptyList())
+        private set
+    private var railJob: Job? = null
+
+    private fun loadRailOptions(loc: UserLocation, dest: GeoCandidate, base: List<TransitConnection>) {
+        railJob?.cancel()
+        railOptions = emptyList()
+        val city = loc.city.ifBlank { gpsCity.orEmpty() }
+        if (!city.contains("Berlin", ignoreCase = true)) return
+        railJob = viewModelScope.launch {
+            val known = base.map { it.summaryLines + it.firstDepartureTime }.toSet()
+            railOptions = TransitApi.findRailOptions(loc.lat, loc.lon, dest.lat, dest.lon, dest.name, activeTimeMillis)
+                .filter { it.summaryLines + it.firstDepartureTime !in known }
+        }
+    }
+
+    /** Eine S-/U-Bahn-Verbindung aus der Zusatzliste anzeigen. */
+    fun selectRailOption(index: Int) {
+        val opt = railOptions.getOrNull(index) ?: return
+        touch()
+        stopSpeaking()
+        val existing = connections.indexOf(opt)
+        if (existing >= 0) {
+            selectedConnection = existing
+        } else {
+            connections = connections + opt
+            selectedConnection = connections.lastIndex
         }
     }
 
